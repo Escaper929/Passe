@@ -3,13 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GalleryFramingEngine } from '@/engine/GalleryFramingEngine';
 import type { PaperTextureMode } from '@/engine/noise';
 import { analyzeSurface, MATBOARD_PRESETS } from '@/engine/palette';
-import {
-  createPreviewSource,
-  decodeImageFile,
-  firstImageFile,
-  hasImageFile,
-} from '@/engine/source';
+import { createPreviewSource, hasImageFile } from '@/engine/source';
 import type { FrameConfig, LayerToggles, RenderSource } from '@/engine/types';
+import ImageTray from '@/input/ImageTray';
+import { useImageQueue } from '@/input/useImageQueue';
 
 import { createTestPattern } from './testPattern';
 
@@ -196,9 +193,11 @@ function LayerSwitch({
 /* ─────────────────────────── 验证台主体 ─────────────────────────── */
 
 export default function MaterialLab() {
-  // 内置测试图作为默认素材，保证打开即有所见。用惰性初始化而非 effect，
-  // 否则会多出一帧空白并触发 setState-in-effect。
-  const [source, setSource] = useState<RenderSource | null>(() => {
+  const queue = useImageQueue();
+
+  // 内置测试图作为兜底素材，保证打开即有所见（队列为空时用它）。
+  // 用惰性初始化而非 effect，否则会多出一帧空白并触发 setState-in-effect。
+  const [testPattern] = useState<RenderSource | null>(() => {
     try {
       return createTestPattern({ width: 3000, height: 2000 });
     } catch {
@@ -206,7 +205,16 @@ export default function MaterialLab() {
       return null;
     }
   });
-  const [sourceLabel, setSourceLabel] = useState('内置合成测试图 3000 × 2000');
+
+  // 优先用队列里选中的那张，没有就退回合成测试图。
+  // 两者都是稳定引用，下游的 useMemo 不会因为每次渲染新建对象而失效。
+  const activeSource = queue.active?.status === 'ready' ? queue.active.source : null;
+  const source: RenderSource | null = activeSource ?? testPattern;
+  const sourceLabel =
+    activeSource && queue.active
+      ? `${queue.active.name} · ${queue.active.width} × ${queue.active.height}`
+      : '内置合成测试图 3000 × 2000';
+
   const [config, setConfig] = useState<FrameConfig>(INITIAL_CONFIG);
   const [textureMode, setTextureMode] = useState<PaperTextureMode>('multiply-screen');
   const [anchor, setAnchor] = useState<SampleAnchor>('window-corner');
@@ -215,7 +223,8 @@ export default function MaterialLab() {
   const [dragging, setDragging] = useState(false);
   const [sampleStatus, setSampleStatus] = useState<'idle' | 'rendering' | 'done' | 'error'>('idle');
   const [sampleNote, setSampleNote] = useState('');
-  const [marker, setMarker] = useState<SampleRegion | null>(null);
+  // 取样框跟素材绑定：换了图，旧框自然失效，不需要额外的重置副作用
+  const [marker, setMarker] = useState<{ source: RenderSource; region: SampleRegion } | null>(null);
   // 浏览器没有 FontFaceSet 时直接视为就绪，否则预览会永远是空白
   const [fontsReady, setFontsReady] = useState(
     () => typeof document === 'undefined' || !document.fonts,
@@ -223,7 +232,7 @@ export default function MaterialLab() {
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const markerRegion = marker && source && marker.source === source ? marker.region : null;
 
   // 钢印用的是 Inter 等系统字体。字体没就绪前渲染，钢印文字会以兜底字体画进画布，
   // 那是一张错误的成品图 —— 必须等字体就绪后再渲染一次。
@@ -286,19 +295,6 @@ export default function MaterialLab() {
     }));
   }, []);
 
-  const handleFile = useCallback(async (file: Blob, label: string) => {
-    try {
-      const bitmap = await decodeImageFile(file);
-      setSource(bitmap);
-      setSourceLabel(`${label} ${bitmap.width} × ${bitmap.height}`);
-      setMarker(null);
-      setSampleStatus('idle');
-      setErrorMessage(null);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : String(error));
-    }
-  }, []);
-
   const renderSample = useCallback(async () => {
     if (!source) return;
     setSampleStatus('rendering');
@@ -326,10 +322,13 @@ export default function MaterialLab() {
       const previewLayout = GalleryFramingEngine.layout(previewSource ?? hiSource, config);
       const ratio = (previewCanvasRef.current?.width ?? canvas.width) / canvas.width;
       setMarker({
-        x: region.x * ratio,
-        y: region.y * ratio,
-        w: region.w * ratio,
-        h: region.h * ratio,
+        source,
+        region: {
+          x: region.x * ratio,
+          y: region.y * ratio,
+          w: region.w * ratio,
+          h: region.h * ratio,
+        },
       });
 
       const shortSide = Math.min(canvas.width, canvas.height);
@@ -360,37 +359,22 @@ export default function MaterialLab() {
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={(event) => {
+          if (!hasImageFile(event.dataTransfer)) return;
           event.preventDefault();
           setDragging(false);
-          const file = firstImageFile(event.dataTransfer);
-          if (file) void handleFile(file, `拖入 · ${file.name}`);
+          // 整批交给输入管线：准入、守卫、顺序解码都在那边，这里不做二次过滤
+          queue.ingestFiles(Array.from(event.dataTransfer.files));
         }}
       >
         <header className="flex items-center justify-between border-b border-studio-line px-6 py-3">
           <div>
             <p className="text-[10px] tracking-[0.3em] text-[#777] uppercase">Passe · 衬境</p>
-            <h1 className="text-sm font-medium text-white">材质验证台 · 阶段 1</h1>
+            <h1 className="text-sm font-medium text-white">材质验证台 · 阶段 2</h1>
           </div>
           <div className="flex items-center gap-3 text-[11px] text-[#666]">
-            <span>{sourceLabel}</span>
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="rounded border border-[#333] px-3 py-1.5 text-[#BBB] transition-colors hover:border-[#555] hover:text-white"
-            >
-              拖入或选择扫描件
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleFile(file, `本地 · ${file.name}`);
-                event.target.value = '';
-              }}
-            />
+            <span className="max-w-[32ch] truncate" title={sourceLabel}>
+              {sourceLabel}
+            </span>
           </div>
         </header>
 
@@ -401,21 +385,21 @@ export default function MaterialLab() {
                 ref={previewCanvasRef}
                 className="h-auto w-auto max-h-[58vh] max-w-full rounded-xs shadow-[0_24px_48px_rgba(0,0,0,0.55)]"
               />
-              {marker && (
+              {markerRegion && (
                 <span
                   aria-hidden
                   className="pointer-events-none absolute border border-[#7F77DD]"
                   style={{
-                    left: `${(marker.x / Math.max(1, frameSize.w)) * 100}%`,
-                    top: `${(marker.y / Math.max(1, frameSize.h)) * 100}%`,
-                    width: `${(marker.w / Math.max(1, frameSize.w)) * 100}%`,
-                    height: `${(marker.h / Math.max(1, frameSize.h)) * 100}%`,
+                    left: `${(markerRegion.x / Math.max(1, frameSize.w)) * 100}%`,
+                    top: `${(markerRegion.y / Math.max(1, frameSize.h)) * 100}%`,
+                    width: `${(markerRegion.w / Math.max(1, frameSize.w)) * 100}%`,
+                    height: `${(markerRegion.h / Math.max(1, frameSize.h)) * 100}%`,
                   }}
                 />
               )}
               {dragging && (
                 <div className="absolute inset-0 flex items-center justify-center rounded-xs border border-dashed border-[#7F77DD] bg-black/50 text-xs text-white">
-                  松手载入这张扫描件
+                  松手即入队
                 </div>
               )}
             </div>
@@ -473,6 +457,8 @@ export default function MaterialLab() {
 
       {/* 控制台 */}
       <aside className="flex w-96 shrink-0 flex-col gap-5 overflow-y-auto border-l border-studio-line bg-studio-panel p-6">
+        <ImageTray queue={queue} />
+
         <Section title="图层逐层开关">
           <div className="-my-1">
             {LAYER_LABELS.map((item) => (

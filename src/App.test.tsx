@@ -40,4 +40,30 @@ describe('App 挂载', () => {
       root.unmount();
     });
   });
+
+  it('输入层就位：空队列时给出拖放与粘贴两种入口，并说明支持格式', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('图片队列');
+    expect(text).toContain('选择或拖拽胶片扫描件');
+    expect(text).toContain('Ctrl / ⌘ + V 粘贴');
+    // 队列为空时不该出现内存条 —— 那会让人以为已经占了资源
+    expect(text).not.toContain('常驻内存');
+
+    const fileInput = container.querySelector('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    // 必须允许多选：批量是 v1.0 的核心场景
+    expect(fileInput?.hasAttribute('multiple')).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });
