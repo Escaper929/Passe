@@ -26,7 +26,8 @@ logs/
 # test / coverage
 coverage/
 .nyc_output/
-__snapshots__/  # 视觉回归基准由 CI 单独管理
+
+# 注意：视觉回归基准图（__snapshots__/）必须入库，不要忽略，否则回归测试失去意义
 
 # env
 .env
@@ -36,3 +37,6 @@ __snapshots__/  # 视觉回归基准由 CI 单独管理
 # typescript
 *.tsbuildinfo
 vite.config.ts.timestamp-*
+
+# agent workspace（我的工作笔记，不入公开仓库；如需跨机同步请删掉本行）
+.workbuddy/
