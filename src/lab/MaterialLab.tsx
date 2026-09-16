@@ -198,9 +198,14 @@ function LayerSwitch({
 export default function MaterialLab() {
   // 内置测试图作为默认素材，保证打开即有所见。用惰性初始化而非 effect，
   // 否则会多出一帧空白并触发 setState-in-effect。
-  const [source, setSource] = useState<RenderSource | null>(() =>
-    createTestPattern({ width: 3000, height: 2000 }),
-  );
+  const [source, setSource] = useState<RenderSource | null>(() => {
+    try {
+      return createTestPattern({ width: 3000, height: 2000 });
+    } catch {
+      // 拿不到 2D 上下文时退化为"等待载入"提示，而不是让整棵组件树崩掉
+      return null;
+    }
+  });
   const [sourceLabel, setSourceLabel] = useState('内置合成测试图 3000 × 2000');
   const [config, setConfig] = useState<FrameConfig>(INITIAL_CONFIG);
   const [textureMode, setTextureMode] = useState<PaperTextureMode>('multiply-screen');
