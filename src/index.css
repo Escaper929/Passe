@@ -1,0 +1,36 @@
+@import 'tailwindcss';
+
+/* ── 设计令牌 ──────────────────────────────────────────────────────────────
+   卡纸配色取自开发指南 §1，刻意不使用 #FFFFFF 纯白（塑料感的根源）。
+   Tailwind v4 的 @theme 会自动把这些变量展开成 bg-mat-warm-white 之类的工具类。
+   ──────────────────────────────────────────────────────────────────────── */
+@theme {
+  --color-mat-warm-white: #f8f7f3;
+  --color-mat-ivory: #f4f0e6;
+  --color-mat-cool-grey: #eceef0;
+  --color-mat-carbon: #1c1c1e;
+
+  --color-studio-bg: #121212;
+  --color-studio-viewport: #18181a;
+  --color-studio-panel: #161618;
+  --color-studio-line: #242426;
+
+  --font-sans:
+    Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-studio-bg);
+  color: #e0e0e0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
