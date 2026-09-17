@@ -13,6 +13,10 @@
  * 5. 预览画布的显示尺寸自己算。原版指望 CSS 的 max-height/max-width 把它压进容器，
  *    但画布是替换元素、而外层高度是按内容撑开的（详见 previewFit.ts），
  *    结果是成品把整列顶出 h-screen，底部连同状态条一起掉到视口外。
+ *
+ * 阶段 4 又加了两块：装裱预设（presets.ts）与批量导出（batchPlan / batchExport /
+ * exportSink）。两者都以"不越权"为原则 —— 预设不碰机型与胶卷，批量导出按开始时
+ * 的队列清单办事，并在进行期间把队列编辑锁上。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -29,9 +33,26 @@ import { disposeSource } from '@/input/queue';
 import type { ImageQueueApi } from '@/input/useImageQueue';
 import { FILE_INPUT_ACCEPT } from '@/input/validate';
 
+import { buildBatchPlan } from './batchPlan';
+import {
+  runBatchExport,
+  type BatchJob,
+  type BatchOutcome,
+  type BatchProgress,
+} from './batchExport';
 import { buildExportPlan, DEFAULT_EXPORT_SIZE_ID, EXPORT_SIZES } from './exportPlan';
+import { createExportSink } from './exportSink';
 import { previewBacking } from './previewBacking';
 import { fitPreview } from './previewFit';
+import {
+  allPresets,
+  applyPreset,
+  createUserPreset,
+  loadUserPresets,
+  nextPresetId,
+  saveUserPresets,
+  type StudioPreset,
+} from './presets';
 
 /**
  * 实时预览的短边上限。
@@ -94,6 +115,14 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
   const [overrideMaxDimension, setOverrideMaxDimension] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportNote, setExportNote] = useState<string | null>(null);
+  /** 批量导出的进行状态。null 表示没在批量 */
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
+  const [isBatching, setIsBatching] = useState(false);
+  /** 批量导出的汇总。跑完一次就一直留着，直到下次导出 */
+  const [batchOutcome, setBatchOutcome] = useState<BatchOutcome | null>(null);
+  const [userPresets, setUserPresets] = useState<StudioPreset[]>(() => loadUserPresets());
+  const [presetName, setPresetName] = useState('');
+  const [presetNote, setPresetNote] = useState<string | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
@@ -108,6 +137,13 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
   /** 预览背板本身。量的是它，而不是画布 —— 画布尺寸由这个结果决定，量它会形成回环 */
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  /**
+   * 批量导出的中断标志。
+   *
+   * 用 ref 而不是 state：循环每张开始前读一次，走 state 会读到闭包里的旧值，
+   * 于是"点了中断却继续导完剩下八张"。而且改它不需要触发重渲染。
+   */
+  const cancelBatchRef = useRef(false);
 
   const activeItem = queue.active;
   const activeFile = activeItem?.file ?? null;
@@ -239,6 +275,72 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
     setOverrideMaxDimension(null);
   }, []);
 
+  /** 导出进行中。队列编辑在此期间必须冻结，理由见 ImageTray 的 locked。 */
+  const frozen = isExporting || isBatching;
+
+  /**
+   * 整队列的导出方案。
+   *
+   * 只有一条素材时不算 —— 那种情况的答案单张导出面板已经给了，
+   * 而这份方案要遍历整队列，没必要在每拖动一次滑杆时都重算一遍。
+   */
+  const batchPlan = useMemo(() => {
+    if (queue.items.length < 2) return null;
+    return buildBatchPlan({
+      items: queue.items,
+      config,
+      sizeId,
+      overrideMaxDimension,
+      cameraModel: config.cameraModel,
+      limit: renderLimit,
+    });
+  }, [queue.items, config, sizeId, overrideMaxDimension, renderLimit]);
+
+  const presets = useMemo(() => allPresets(userPresets), [userPresets]);
+
+  /**
+   * 改动用户预设的唯一出口：改状态的同时落盘。
+   *
+   * 新增与删除都走这里，于是不会出现"加了没存"或"删了没存"这种只发生在一半
+   * 路径上的疏漏。写不进去（配额满 / 隐私模式）时如实说，不让用户以为存住了。
+   *
+   * 刻意不放在 effect 里：那会变成"渲染后同步 setState"，既触发级联渲染，
+   * 也会在首次挂载时白白覆盖一次存储。
+   */
+  const commitPresets = useCallback((next: StudioPreset[]) => {
+    setUserPresets(next);
+    if (!saveUserPresets(next)) {
+      setPresetNote('浏览器拒绝写入本地存储，预设只在本次会话有效。');
+    }
+  }, []);
+
+  const handleSavePreset = useCallback(() => {
+    commitPresets([
+      ...userPresets,
+      // id 由**现有集合**推导：模块级自增计数器一刷新就从 1 重来，
+      // 会和上次存下的那条撞 id
+      createUserPreset(
+        presetName,
+        config,
+        nextPresetId(userPresets),
+        `我的预设 ${userPresets.length + 1}`,
+      ),
+    ]);
+    setPresetName('');
+  }, [commitPresets, presetName, config, userPresets]);
+
+  const handleDeletePreset = useCallback(
+    (id: string) => {
+      commitPresets(userPresets.filter((preset) => preset.id !== id));
+    },
+    [commitPresets, userPresets],
+  );
+
+  /** 批量中断。只置标志，循环会在下一张开始前退出 —— 正在渲染的那张会跑完。 */
+  const handleCancelBatch = useCallback(() => {
+    cancelBatchRef.current = true;
+  }, []);
+
   const handleExport = useCallback(async () => {
     if (!plan || !plan.canExport || !source) return;
 
@@ -269,19 +371,61 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
     }
   }, [plan, config, activeFile, source]);
 
+  const handleExportAll = useCallback(async () => {
+    if (!batchPlan || batchPlan.exportable.length === 0 || frozen) return;
+
+    const jobs: BatchJob[] = batchPlan.exportable.map((entry) => ({
+      id: entry.item.id,
+      name: entry.item.name,
+      file: entry.item.file,
+      filename: entry.filename,
+      maxDimension: entry.plan.maxDimension,
+    }));
+
+    cancelBatchRef.current = false;
+    setBatchOutcome(null);
+    setIsBatching(true);
+    setBatchProgress({ done: 0, total: jobs.length, current: null });
+    // 选文件夹必须落在用户手势的有效期内。这个 await 只有 24ms，
+    // 远短于浏览器的瞬时激活窗口，但它同时让按钮的进行态有机会画出来。
+    await new Promise((resolve) => setTimeout(resolve, 24));
+
+    try {
+      const outcome = await runBatchExport(jobs, {
+        sink: createExportSink(),
+        reopen: reopenFullResolution,
+        render: (source, options) =>
+          GalleryFramingEngine.exportBlob(source, config, {
+            format: 'image/jpeg',
+            quality: 0.98,
+            maxDimension: options.maxDimension,
+          }),
+        dispose: disposeSource,
+        onProgress: setBatchProgress,
+        shouldCancel: () => cancelBatchRef.current,
+      });
+      setBatchOutcome(outcome);
+    } finally {
+      setBatchProgress(null);
+      setIsBatching(false);
+    }
+  }, [batchPlan, config, frozen]);
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-studio-bg font-sans text-[#E0E0E0]">
       {/* 视口 */}
       <main
         className="relative flex min-w-0 flex-1 flex-col select-none"
         onDragOver={(event) => {
-          if (!hasImageFile(event.dataTransfer)) return;
+          if (frozen || !hasImageFile(event.dataTransfer)) return;
           event.preventDefault();
           setDragging(true);
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={(event) => {
-          if (!hasImageFile(event.dataTransfer)) return;
+          // 导出期间不接收新素材：批量方案是按开始那一刻的队列算出来的，
+          // 中途加进来的图既不会被导出，还会占掉一份内存
+          if (frozen || !hasImageFile(event.dataTransfer)) return;
           event.preventDefault();
           setDragging(false);
           queue.ingestFiles(Array.from(event.dataTransfer.files));
@@ -292,7 +436,7 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
             <p className="text-[10px] tracking-[0.3em] text-[#777] uppercase">Passe · 衬境</p>
             {/* 阶段标记只挂在入口界面上，用来一眼确认线上跑的是哪一版；
                 v1.0 定稿时换成版本号 */}
-            <h1 className="text-sm font-medium text-white">画廊装裱调校台 · 阶段 3</h1>
+            <h1 className="text-sm font-medium text-white">画廊装裱调校台 · 阶段 4</h1>
           </div>
           <div className="flex items-center gap-3 text-[11px] text-[#666]">
             {activeItem && activeItem.status === 'ready' ? (
@@ -396,7 +540,63 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
 
       {/* 控制台 */}
       <aside className="flex w-96 shrink-0 flex-col gap-5 overflow-y-auto border-l border-studio-line bg-studio-panel p-6">
-        <ImageTray queue={queue} variant="compact" />
+        <ImageTray queue={queue} variant="compact" locked={frozen} />
+
+        <Section title="装裱预设" hint="存的是装裱样式，不含机型与胶卷">
+          <div className="space-y-1.5">
+            {presets.map((preset) => (
+              <div key={preset.id} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    patchConfig(applyPreset(config, preset));
+                    setPresetNote(null);
+                  }}
+                  title={preset.builtin ? '出厂预设' : '我的预设'}
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded border border-[#2A2A2C] bg-[#1C1C1E] px-2 py-1.5 text-left text-[11px] text-[#CCC] transition-colors hover:border-[#48484A] hover:text-white"
+                >
+                  <span
+                    className="h-3.5 w-3.5 shrink-0 rounded-xs border border-black/40"
+                    style={{ background: preset.style.matColor ?? '#F8F7F3' }}
+                  />
+                  <span className="truncate">{preset.name}</span>
+                </button>
+                {preset.builtin ? null : (
+                  <button
+                    type="button"
+                    onClick={() => handleDeletePreset(preset.id)}
+                    title="删除这条预设"
+                    className="rounded-xs px-1 text-[10px] text-[#666] transition-colors hover:text-[#F09595]"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-3 flex items-end gap-2">
+            <div className="min-w-0 flex-1">
+              <TextField
+                label="新预设名"
+                placeholder={`我的预设 ${userPresets.length + 1}`}
+                value={presetName}
+                onChange={setPresetName}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleSavePreset}
+              className="shrink-0 rounded border border-[#333] px-3 py-2 text-[11px] text-[#BBB] transition-colors hover:border-[#555] hover:text-white"
+            >
+              存为预设
+            </button>
+          </div>
+
+          {presetNote ? (
+            <p className="mt-2 text-[10px] leading-relaxed text-[#C9A961]">{presetNote}</p>
+          ) : null}
+        </Section>
 
         <Section title="卡纸材质">
           <ChoiceGrid
@@ -610,7 +810,7 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
           <button
             type="button"
             onClick={() => void handleExport()}
-            disabled={!plan || !plan.canExport || isExporting}
+            disabled={!plan || !plan.canExport || frozen}
             className={`mt-3 w-full rounded py-3 text-xs font-medium tracking-widest uppercase transition-all ${
               plan?.canExport && !isExporting
                 ? 'bg-white text-black hover:bg-[#EAEAEA] active:scale-[0.99]'
@@ -619,6 +819,123 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
           >
             {isExporting ? '正在渲染超清装裱大图…' : '导出画廊装裱作品'}
           </button>
+
+          {batchPlan ? (
+            <section className="mt-6 border-t border-studio-line pt-5">
+              <h3 className="mb-3 text-xs tracking-wider text-[#777] uppercase">批量</h3>
+
+              <p className="text-[10px] leading-relaxed text-[#666]">
+                队列 {batchPlan.entries.length} 张 ·{' '}
+                <span className="text-[#BBB]">可导出 {batchPlan.exportable.length} 张</span>
+                {batchPlan.skipped.length > 0 ? ` · 跳过 ${batchPlan.skipped.length} 张` : ''}
+              </p>
+
+              {batchPlan.exportable.length > 0 ? (
+                <p className="mt-1.5 text-[10px] leading-relaxed text-[#666]">
+                  逐张串行导出，峰值按最大的一张算：
+                  <span className="text-[#BBB]">{formatMemory(batchPlan.peakBytes)}</span>
+                  {batchPlan.peakName ? `（${batchPlan.peakName}）` : ''}
+                </p>
+              ) : null}
+
+              {batchPlan.skipped.length > 0 ? (
+                <ul className="mt-2 space-y-1.5 text-[10px] leading-relaxed text-[#666]">
+                  {batchPlan.skipped.map((entry) => (
+                    <li key={entry.item.id} className="border-l border-[#3A2A2A] pl-2">
+                      <span className="text-[#C9A961]">{entry.item.name}</span>：{entry.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {batchPlan.unifiedMaxDimension !== null ? (
+                <button
+                  type="button"
+                  onClick={() => setOverrideMaxDimension(batchPlan.unifiedMaxDimension)}
+                  className="mt-2 w-full rounded border border-[#4A3F1E] px-3 py-2 text-[11px] text-[#C9A961] transition-colors hover:border-[#6A5A2E] hover:text-white"
+                >
+                  统一压到长边 {batchPlan.unifiedMaxDimension}px，整批都能导出
+                </button>
+              ) : null}
+
+              {isBatching ? (
+                <button
+                  type="button"
+                  onClick={handleCancelBatch}
+                  className="mt-3 w-full rounded border border-[#501313] px-3 py-2.5 text-[11px] text-[#F09595] transition-colors hover:border-[#7A2020] hover:text-white"
+                >
+                  中断导出（正在渲染的那张会跑完）
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handleExportAll()}
+                  disabled={batchPlan.exportable.length === 0 || frozen}
+                  className={`mt-3 w-full rounded py-3 text-xs font-medium tracking-widest uppercase transition-all ${
+                    batchPlan.exportable.length > 0 && !frozen
+                      ? 'border border-white/80 text-white hover:bg-white/10 active:scale-[0.99]'
+                      : 'cursor-not-allowed border border-[#222] text-[#555]'
+                  }`}
+                >
+                  {batchPlan.exportable.length > 0
+                    ? `导出全部 ${batchPlan.exportable.length} 张`
+                    : '本批没有可导出的素材'}
+                </button>
+              )}
+
+              {batchProgress ? (
+                <div className="mt-3">
+                  <div className="flex items-baseline justify-between gap-2 text-[10px] text-[#666]">
+                    <span className="truncate">
+                      {batchProgress.current ? `正在导出 ${batchProgress.current}` : '准备中…'}
+                    </span>
+                    <span className="shrink-0 text-[#BBB]">
+                      {batchProgress.done} / {batchProgress.total}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-[#262628]">
+                    <div
+                      className="h-full rounded-full bg-[#7F77DD] transition-[width] duration-300"
+                      style={{
+                        width: `${
+                          batchProgress.total > 0
+                            ? Math.round((batchProgress.done / batchProgress.total) * 100)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              {batchOutcome ? (
+                <div className="mt-3 space-y-1.5 text-[10px] leading-relaxed">
+                  {batchOutcome.blockedReason ? (
+                    <p className="rounded border border-[#4A3F1E] bg-[#241F12] px-2.5 py-2 text-[#C9A961]">
+                      {batchOutcome.blockedReason}
+                    </p>
+                  ) : (
+                    <p className="rounded border border-[#2F4A36] bg-[#16231A] px-2.5 py-2 text-[#86C48B]">
+                      已导出 {batchOutcome.exported.length} 张，写入{batchOutcome.sinkLabel}
+                      {batchOutcome.cancelled ? '（已中断，没导完）' : ''}
+                      {batchOutcome.failed.length > 0
+                        ? ` · ${batchOutcome.failed.length} 张失败`
+                        : ''}
+                    </p>
+                  )}
+
+                  {batchOutcome.failed.map((failure) => (
+                    <p
+                      key={failure.id}
+                      className="rounded border border-[#501313] bg-[#2A1212] px-2.5 py-1.5 text-[#F09595]"
+                    >
+                      {failure.name}：{failure.reason}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
 
           <input
             ref={fileInputRef}

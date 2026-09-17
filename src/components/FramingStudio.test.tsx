@@ -10,6 +10,7 @@ import { installCanvasHarness } from '@/test/canvasHarness';
 import { waitFor } from '@/test/waitFor';
 
 import { FramingStudio, PREVIEW_INSET } from './FramingStudio';
+import { PRESET_STORAGE_KEY } from './presets';
 
 /**
  * 调校台测试。
@@ -52,6 +53,8 @@ let dims: [number, number] = [2000, 1500];
 let downloads: string[] = [];
 /** createObjectURL 的调用次数 */
 let objectUrls = 0;
+/** 解码替身本体。单个用例可以改它的某一次返回值 */
+let decodeBitmap: ReturnType<typeof vi.fn>;
 
 /**
  * 造一个"尺寸会撒谎"的位图替身。
@@ -104,10 +107,11 @@ beforeEach(() => {
   downloads = [];
   objectUrls = 0;
 
-  vi.stubGlobal(
-    'createImageBitmap',
-    vi.fn(async () => makeBitmap(dims[0], dims[1])),
-  );
+  // 留住引用：单个用例要按顺序换掉其中某一次的返回值（比如让第二张解码失败）
+  decodeBitmap = vi.fn(async () => makeBitmap(dims[0], dims[1]));
+  vi.stubGlobal('createImageBitmap', decodeBitmap);
+  // 预设存在 localStorage 里，用例之间必须清干净，否则上一条的预设会出现在下一条的列表里
+  window.localStorage.clear();
   vi.stubGlobal('URL', {
     ...URL,
     createObjectURL: vi.fn(() => {
@@ -146,6 +150,12 @@ afterEach(async () => {
     },
     { timeout: 3000, label: '等仍在进行的导出收尾' },
   ).catch(() => undefined);
+
+  // 批量导出同样是异步的，超时不会让它停下 —— 拆组件前也得等它收尾
+  await waitFor(() => !text().includes('中断导出'), {
+    timeout: 8000,
+    label: '等仍在进行的批量导出收尾',
+  }).catch(() => undefined);
 
   await act(async () => {
     root?.unmount();
@@ -224,6 +234,34 @@ function frameBox(): { w: number; h: number } {
 async function waitForExportDone(): Promise<void> {
   await waitFor(() => downloads.length > 0, { label: '下载被触发' });
   await waitFor(() => exportButton().disabled === false, { label: '导出按钮恢复可点' });
+}
+
+function batchButton(): HTMLButtonElement {
+  const buttons = Array.from(container?.querySelectorAll('button') ?? []);
+  const match = buttons.find((button) =>
+    /导出全部|中断导出|没有可导出的素材/.test(button.textContent ?? ''),
+  );
+  if (!match) throw new Error('找不到批量导出按钮');
+  return match as HTMLButtonElement;
+}
+
+/** 整批只有一段进行中的文案，等它消失就是收尾了。 */
+async function waitForBatchSettled(expected: number): Promise<void> {
+  await waitFor(() => downloads.length >= expected || text().includes('张失败'), {
+    label: '批量导出产生结果',
+  });
+  await waitFor(() => !text().includes('中断导出'), { timeout: 8000, label: '批量收尾' });
+}
+
+/** 连喂 N 张，等到全部就绪。 */
+async function seedImages(queue: ImageQueueApi, count: number): Promise<void> {
+  const files = Array.from({ length: count }, (_, index) => file(`scan-${index + 1}.tif`));
+  await act(async () => {
+    queue.ingestFiles(files);
+  });
+  await waitFor(() => latestQueue?.items.every((item) => item.status === 'ready') === true, {
+    label: `${count} 张全部解码完成`,
+  });
 }
 
 function file(name = 'portra400.tif', type = 'image/tiff'): File {
@@ -527,6 +565,229 @@ describe('调校台 · 内存守卫拦下导出', () => {
     expect(exportButton().disabled).toBe(false);
     // 走的是 2K，不是修正值
     expect(shownFilename()).toContain('_2048px.jpg');
+  });
+});
+
+describe('调校台 · 批量导出', () => {
+  it('队列里三张一次导完，每张都写盘、都释放', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImages(latestQueue!, 3);
+
+    expect(text()).toContain('可导出 3 张');
+    expect(text()).not.toContain('跳过');
+
+    const closesBefore = closeCalls;
+
+    await act(async () => {
+      batchButton().click();
+    });
+    await waitForBatchSettled(3);
+
+    expect(downloads).toHaveLength(3);
+    // 三个文件名互不相同 —— 同名扫描件进同一个目录会互相覆盖
+    expect(new Set(downloads).size).toBe(3);
+    expect(downloads.every((name) => name.endsWith('_2000px.jpg'))).toBe(true);
+
+    // 每张各自重解一次原图、各自释放一次。
+    // 少一次就是泄漏，多一次就是重复释放，两种都会在这里现形。
+    expect(closeCalls - closesBefore).toBe(3);
+    expect(objectUrls).toBe(3);
+    expect(vi.mocked(URL.revokeObjectURL)).toHaveBeenCalledTimes(3);
+
+    expect(text()).toContain('已导出 3 张');
+    expect(text()).toContain('浏览器下载');
+  });
+
+  it('中间一张坏掉时只跳过它，后面的照导', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImages(latestQueue!, 3);
+
+    const closesBefore = closeCalls;
+
+    // 队列解码已经用掉三次；下面三次依次是这三张的导出重解
+    decodeBitmap.mockImplementationOnce(async () => makeBitmap(dims[0], dims[1]));
+    decodeBitmap.mockImplementationOnce(async () => {
+      throw new Error('文件已损坏，无法重解');
+    });
+    decodeBitmap.mockImplementationOnce(async () => makeBitmap(dims[0], dims[1]));
+
+    await act(async () => {
+      batchButton().click();
+    });
+    await waitForBatchSettled(2);
+
+    expect(downloads).toHaveLength(2);
+    expect(text()).toContain('已导出 2 张');
+    expect(text()).toContain('1 张失败');
+    expect(text()).toContain('scan-2.tif');
+    expect(text()).toContain('文件已损坏，无法重解');
+    // 失败的那张根本没解出位图，所以只应该有两次释放；
+    // 若多出一次，说明我们在给一张不存在的东西做释放
+    expect(closeCalls - closesBefore).toBe(2);
+    expect(exportButton().disabled).toBe(false);
+  });
+
+  it('导出进行中锁住队列编辑，结束后恢复', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImages(latestQueue!, 2);
+
+    act(() => {
+      batchButton().click();
+    });
+
+    // 还没 await，批量正在进行
+    expect(text()).toContain('队列已锁定');
+    expect(findButton('清空').disabled).toBe(true);
+    const lockedRemove = container?.querySelector<HTMLButtonElement>('button[title="导出进行中"]');
+    expect(lockedRemove?.disabled).toBe(true);
+    // 单张导出也一并挡住：两条路径同时渲染会直接把内存翻倍
+    expect(exportButton().disabled).toBe(true);
+
+    await waitForBatchSettled(2);
+
+    expect(text()).not.toContain('队列已锁定');
+    expect(findButton('清空').disabled).toBe(false);
+    expect(exportButton().disabled).toBe(false);
+    expect(latestQueue!.items).toHaveLength(2);
+  });
+
+  it('中断后不再开新的一张，已导出的仍然算数', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImages(latestQueue!, 3);
+
+    act(() => {
+      batchButton().click();
+    });
+    // 第一张还没开始渲染，此刻中断
+    act(() => {
+      batchButton().click();
+    });
+
+    await waitForBatchSettled(0);
+
+    expect(downloads).toHaveLength(0);
+    expect(text()).toContain('已导出 0 张');
+    expect(text()).toContain('已中断');
+    expect(text()).not.toContain('中断导出');
+  });
+
+  it('整批里有一张超标时给出统一修正，点完两张都能导', async () => {
+    // 一张普通、一张巨幅：6MP 上限下只有前者过得去
+    decodeBitmap.mockImplementationOnce(async () => makeBitmap(2000, 1500));
+    decodeBitmap.mockImplementationOnce(async () => makeBitmap(8000, 6000));
+
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} renderLimit={TIGHT_LIMIT} />);
+    await act(async () => {
+      latestQueue!.ingestFiles([file('small.tif'), file('giant.tif')]);
+    });
+    await waitFor(() => latestQueue?.items.every((item) => item.status === 'ready') === true, {
+      label: '两张都解码完成',
+    });
+
+    expect(text()).toContain('可导出 1 张');
+    expect(text()).toContain('跳过 1 张');
+
+    const unified = findButton('统一压到长边');
+    await act(async () => {
+      unified.click();
+    });
+
+    // 同一份修正值要同时满足两张
+    expect(text()).toContain('可导出 2 张');
+    expect(text()).not.toContain('跳过');
+
+    await act(async () => {
+      batchButton().click();
+    });
+    await waitForBatchSettled(2);
+    expect(downloads).toHaveLength(2);
+  });
+});
+
+describe('调校台 · 预设', () => {
+  it('应用预设会换掉整套样式', async () => {
+    // 卡纸亮度那一行只在有素材时渲染，所以要先喂一张，断言才有落点
+    dims = [3000, 2000];
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+
+    // 默认是博物馆暖白
+    expect(text()).toContain('浅色');
+
+    await act(async () => {
+      findButton('炭黑展厅').click();
+    });
+
+    expect(text()).toContain('深色');
+    // 连带把边距等其它参数也一并换掉 —— 预设是整套样式，不是只换颜色
+    expect(text()).toContain('18%');
+  });
+
+  it('换预设不会抹掉机型与胶卷 —— 那是素材的身份，不是装裱样式', async () => {
+    dims = [3000, 2000];
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+
+    await act(async () => {
+      findButton('炭黑展厅').click();
+    });
+
+    await act(async () => {
+      exportButton().click();
+    });
+    await waitForExportDone();
+
+    // 机型还在导出文件名里，说明预设只换了样式
+    expect(downloads[0]).toContain('LEICA-M6');
+  });
+
+  it('出厂预设不可删除，用户预设可存可删', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+
+    // 四条出厂预设，一条删除按钮都没有
+    expect(text()).toContain('博物馆标准');
+    expect(text()).toContain('炭黑展厅');
+    expect(container?.querySelectorAll('button[title="删除这条预设"]')).toHaveLength(0);
+
+    await act(async () => {
+      findButton('存为预设').click();
+    });
+
+    // 没填名字时用兜底名
+    expect(text()).toContain('我的预设 1');
+    const deletions =
+      container?.querySelectorAll<HTMLButtonElement>('button[title="删除这条预设"]');
+    expect(deletions).toHaveLength(1);
+
+    // 存下去就该真的落盘
+    const stored = JSON.parse(window.localStorage.getItem(PRESET_STORAGE_KEY) ?? '[]');
+    expect(stored).toHaveLength(1);
+    expect(stored[0].name).toBe('我的预设 1');
+
+    await act(async () => {
+      deletions![0].click();
+    });
+    expect(text()).not.toContain('我的预设 1');
+    expect(JSON.parse(window.localStorage.getItem(PRESET_STORAGE_KEY) ?? '[]')).toEqual([]);
+  });
+
+  it('刷新后（重新挂载）上次存的预设还在', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await act(async () => {
+      findButton('存为预设').click();
+    });
+    expect(text()).toContain('我的预设 1');
+
+    // 模拟一次刷新：拆掉再装一份
+    await act(async () => {
+      root?.unmount();
+    });
+    container?.remove();
+    container = null;
+    root = null;
+
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    expect(text()).toContain('我的预设 1');
   });
 });
 

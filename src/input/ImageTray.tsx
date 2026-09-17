@@ -73,6 +73,7 @@ function ItemRow({
   isActive,
   canMoveUp,
   canMoveDown,
+  locked,
   onSelect,
   onRemove,
   onMove,
@@ -81,6 +82,13 @@ function ItemRow({
   isActive: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  /**
+   * 导出进行中：只锁**改动**队列的操作，切换查看仍然放行。
+   *
+   * 删掉正在导出的那一项，等于让引擎拿着一块已经释放的位图去渲染，
+   * 或者反过来泄漏一张永远不会被释放的 —— 两种都不是用户想要的。
+   */
+  locked: boolean;
   onSelect: () => void;
   onRemove: () => void;
   onMove: (delta: number) => void;
@@ -132,8 +140,8 @@ function ItemRow({
               <button
                 type="button"
                 onClick={() => onMove(-1)}
-                disabled={!canMoveUp}
-                title="上移"
+                disabled={locked || !canMoveUp}
+                title={locked ? '导出进行中' : '上移'}
                 className="rounded-xs px-1 text-[10px] text-[#777] transition-colors hover:text-white disabled:cursor-not-allowed disabled:text-[#333]"
               >
                 ↑
@@ -141,8 +149,8 @@ function ItemRow({
               <button
                 type="button"
                 onClick={() => onMove(1)}
-                disabled={!canMoveDown}
-                title="下移"
+                disabled={locked || !canMoveDown}
+                title={locked ? '导出进行中' : '下移'}
                 className="rounded-xs px-1 text-[10px] text-[#777] transition-colors hover:text-white disabled:cursor-not-allowed disabled:text-[#333]"
               >
                 ↓
@@ -150,8 +158,9 @@ function ItemRow({
               <button
                 type="button"
                 onClick={onRemove}
-                title="移除"
-                className="rounded-xs px-1 text-[10px] text-[#777] transition-colors hover:text-[#F09595]"
+                disabled={locked}
+                title={locked ? '导出进行中' : '移除'}
+                className="rounded-xs px-1 text-[10px] text-[#777] transition-colors hover:text-[#F09595] disabled:cursor-not-allowed disabled:text-[#333]"
               >
                 ✕
               </button>
@@ -179,6 +188,7 @@ export default function ImageTray({
   queue,
   variant = 'full',
   className = '',
+  locked = false,
 }: {
   queue: ImageQueueApi;
   /**
@@ -188,6 +198,14 @@ export default function ImageTray({
    */
   variant?: 'full' | 'compact';
   className?: string;
+  /**
+   * 导出进行中：锁住一切会改动队列的操作（清空、移除、上下移、继续添加、粘贴）。
+   *
+   * 批量导出是异步的，它按开始时拿到的清单逐张读文件。用户在期间删掉某一项，
+   * 轻则让引擎去读一块已释放的位图，重则泄漏一张永远不会被释放的全分辨率位图
+   * —— 后者是几百 MB。所以宁可短暂锁一下。
+   */
+  locked?: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -203,6 +221,7 @@ export default function ImageTray({
     <section
       className={`flex flex-col gap-3 ${className}`}
       onDragOver={(event) => {
+        if (locked) return;
         event.preventDefault();
         if (!dragging) setDragging(true);
       }}
@@ -212,6 +231,7 @@ export default function ImageTray({
         setDragging(false);
       }}
       onDrop={(event) => {
+        if (locked) return;
         event.preventDefault();
         setDragging(false);
         queue.ingestFiles(Array.from(event.dataTransfer.files));
@@ -225,12 +245,20 @@ export default function ImageTray({
           <button
             type="button"
             onClick={queue.clear}
-            className="text-[10px] text-[#666] transition-colors hover:text-[#F09595]"
+            disabled={locked}
+            title={locked ? '导出进行中' : '清空队列'}
+            className="text-[10px] text-[#666] transition-colors hover:text-[#F09595] disabled:cursor-not-allowed disabled:text-[#3A3A3C]"
           >
             清空
           </button>
         ) : null}
       </header>
+
+      {locked ? (
+        <p className="rounded border border-[#3A3222] bg-[#221E14] px-2.5 py-1.5 text-[10px] leading-relaxed text-[#C9A961]">
+          导出进行中，队列已锁定。可以继续切图查看，导出结束后恢复编辑。
+        </p>
+      ) : null}
 
       {notice ? (
         <div
@@ -270,7 +298,8 @@ export default function ImageTray({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className={`flex h-32 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed px-4 text-center transition-colors ${
+          disabled={locked}
+          className={`flex h-32 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed px-4 text-center transition-colors disabled:cursor-not-allowed ${
             dragging
               ? 'border-[#7F77DD] bg-[#1E1C2A]'
               : 'border-[#333] bg-[#1A1A1C] hover:border-[#555]'
@@ -298,6 +327,7 @@ export default function ImageTray({
               isActive={item.id === activeId}
               canMoveUp={index > 0}
               canMoveDown={index < items.length - 1}
+              locked={locked}
               onSelect={() => queue.select(item.id)}
               onRemove={() => queue.remove(item.id)}
               onMove={(delta) => queue.move(item.id, delta)}
@@ -310,7 +340,8 @@ export default function ImageTray({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="rounded border border-[#333] px-3 py-1.5 text-[11px] text-[#BBB] transition-colors hover:border-[#555] hover:text-white"
+          disabled={locked}
+          className="rounded border border-[#333] px-3 py-1.5 text-[11px] text-[#BBB] transition-colors hover:border-[#555] hover:text-white disabled:cursor-not-allowed disabled:border-[#262628] disabled:text-[#444]"
         >
           {empty ? '选择图片' : '继续添加'}
         </button>
@@ -321,7 +352,8 @@ export default function ImageTray({
             const ok = await queue.readClipboard();
             setClipboardHint(ok ? null : '未能读取剪贴板，请改用拖放或 ⌘ + V');
           }}
-          className="rounded border border-[#333] px-3 py-1.5 text-[11px] text-[#BBB] transition-colors hover:border-[#555] hover:text-white"
+          disabled={locked}
+          className="rounded border border-[#333] px-3 py-1.5 text-[11px] text-[#BBB] transition-colors hover:border-[#555] hover:text-white disabled:cursor-not-allowed disabled:border-[#262628] disabled:text-[#444]"
         >
           从剪贴板
         </button>
