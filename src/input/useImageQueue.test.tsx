@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isTextEntryTarget, useImageQueue, type ImageQueueApi } from './useImageQueue';
+import { waitFor } from '@/test/waitFor';
 
 /**
  * 输入管线的集成测试。
@@ -156,16 +157,10 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-/** 反复刷新微任务与计时器，直到条件成立或超时。 */
-async function waitFor(predicate: () => boolean, attempts = 60): Promise<void> {
-  for (let i = 0; i < attempts; i += 1) {
-    if (predicate()) return;
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 2));
-    });
-  }
-  throw new Error('等待条件超时');
-}
+/**
+ * 反复刷新微任务与计时器，直到条件成立或超时。
+ * 见 @/test/waitFor。
+ */
 
 function imageFile(name: string, type = 'image/jpeg', size = 4096): File {
   return new File([new Uint8Array(Math.min(size, 16))], name, { type });

@@ -8,9 +8,12 @@ import App from '@/App';
  * 组件挂载冒烟测试。
  *
  * 这里跑在 jsdom 下，jsdom 没有 2D 画布（getContext 返回 null），
- * 正好覆盖"画布不可用"这条退化路径：验证台必须仍然渲染出完整界面，
+ * 正好覆盖"画布不可用"这条退化路径：调校台必须仍然渲染出完整界面，
  * 而不是在 useState 初始化阶段抛错把整棵组件树带崩。
  * 引擎的真实像素行为由 render.test.ts 在 Skia 画布上验证。
+ *
+ * 阶段 3 起 App 的入口是正式调校台，材质验证台改为从页眉切入 ——
+ * 因此这里的断言对齐的是调校台的文案。
  */
 
 let container: HTMLDivElement | null = null;
@@ -52,8 +55,11 @@ describe('App 挂载', () => {
 
     const text = container.textContent ?? '';
     expect(text).toContain('图片队列');
+    // 视口里的大拖放区
     expect(text).toContain('选择或拖拽胶片扫描件');
-    expect(text).toContain('Ctrl / ⌘ + V 粘贴');
+    // 侧栏紧凑版面板：空队列时用一句话指路，两个按钮分别是选择图片与读剪贴板
+    expect(text).toContain('队列为空');
+    expect(text).toContain('从剪贴板');
     // 队列为空时不该出现内存条 —— 那会让人以为已经占了资源
     expect(text).not.toContain('常驻内存');
 

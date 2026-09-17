@@ -26,9 +26,17 @@ export interface ImageItem {
   name: string;
   size: number;
   status: ItemStatus;
-  /** 解码后的尺寸。未完成解码时为 0 */
+  /** 工作副本尺寸。未完成解码时为 0 */
   width: number;
   height: number;
+  /**
+   * 原始文件尺寸。
+   *
+   * 与工作副本尺寸必须分开：导出时会按需重解全分辨率原图，
+   * 内存守卫要评估的正是那张图 —— 用工作副本尺寸去算会严重低估。
+   */
+  originalWidth: number;
+  originalHeight: number;
   /** 受控工作副本，供预览与交互渲染。导出时按需重解原始文件 */
   source: RenderSource | null;
   /** 原始文件引用。全分辨率导出时用它重新解码，避免常驻内存 */
@@ -49,7 +57,15 @@ export const emptyQueue: ImageQueueState = { items: [], activeId: null };
 export type QueueAction =
   | { type: 'add'; items: ImageItem[] }
   | { type: 'decoding'; id: string }
-  | { type: 'decoded'; id: string; source: RenderSource; width: number; height: number }
+  | {
+      type: 'decoded';
+      id: string;
+      source: RenderSource;
+      width: number;
+      height: number;
+      originalWidth: number;
+      originalHeight: number;
+    }
   | { type: 'failed'; id: string; error: string }
   | { type: 'remove'; id: string }
   | { type: 'clear' }
@@ -71,6 +87,8 @@ export function createQueuedItem(file: File, options: CreateItemOptions): ImageI
     status: 'queued',
     width: 0,
     height: 0,
+    originalWidth: 0,
+    originalHeight: 0,
     source: null,
     file,
     error: null,
@@ -100,6 +118,8 @@ export function queueReducer(state: ImageQueueState, action: QueueAction): Image
         source: action.source,
         width: action.width,
         height: action.height,
+        originalWidth: action.originalWidth,
+        originalHeight: action.originalHeight,
         error: null,
       }));
 

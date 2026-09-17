@@ -112,9 +112,16 @@ function ItemRow({
           </button>
 
           <div className="mt-1 flex items-center gap-2 text-[10px] text-[#777]">
-            <span>{item.width > 0 ? `${item.width} × ${item.height}` : '—'}</span>
+            <span title={item.width > 0 ? `工作副本 ${item.width} × ${item.height}` : undefined}>
+              {item.originalWidth > 0 ? `${item.originalWidth} × ${item.originalHeight}` : '—'}
+            </span>
             <span className="text-[#3A3A3C]">·</span>
             <span>{formatBytes(item.size)}</span>
+            {item.width > 0 && item.originalWidth > item.width ? (
+              <span className="text-[#555]" title="导出走原图，不受工作副本限制">
+                副本 {item.width}px
+              </span>
+            ) : null}
           </div>
 
           <div className="mt-1.5 flex items-center gap-1.5">
@@ -170,9 +177,16 @@ function ItemRow({
 
 export default function ImageTray({
   queue,
+  variant = 'full',
   className = '',
 }: {
   queue: ImageQueueApi;
+  /**
+   * full：自带大幅拖放区（材质验证台用）。
+   * compact：队列为空时只留按钮（正式调校台用 —— 视口已经有个更大的拖放区了，
+   * 侧栏再摆一个只是把同一件事说两遍）。
+   */
+  variant?: 'full' | 'compact';
   className?: string;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -181,6 +195,7 @@ export default function ImageTray({
 
   const { items, activeId, progress, memory, notice } = queue;
   const empty = items.length === 0;
+  const compactEmpty = empty && variant === 'compact';
 
   const memoryPercent = Math.min(100, Math.round(memory.load * 100));
 
@@ -247,7 +262,11 @@ export default function ImageTray({
         </p>
       ) : null}
 
-      {empty ? (
+      {compactEmpty ? (
+        <p className="rounded border border-[#262628] bg-[#1C1C1E] px-2.5 py-2 text-[10px] leading-relaxed text-[#666]">
+          队列为空。把扫描件拖进左侧视口，或用下面的按钮选择、粘贴。
+        </p>
+      ) : empty ? (
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}

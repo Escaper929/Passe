@@ -26,6 +26,8 @@ function decodeItem(state: ImageQueueState, id: string): ImageQueueState {
     source: { width: 2400, height: 1600 } as unknown as HTMLCanvasElement,
     width: 2400,
     height: 1600,
+    originalWidth: 6000,
+    originalHeight: 4000,
   });
 }
 
@@ -88,6 +90,24 @@ describe('队列 · 解码结果落库', () => {
     expect(done.items[0].source).not.toBeNull();
   });
 
+  it('工作副本尺寸与原始尺寸分别记录，互不覆盖', () => {
+    // 这是导出路径的关键：内存守卫要评估的是全分辨率原图，
+    // 若把工作副本尺寸当成原图尺寸，守卫会放行一次注定失败的重渲染
+    const done = decodeItem(withItems('a'), 'a');
+    const item = done.items[0];
+
+    expect(item.width).toBe(2400);
+    expect(item.originalWidth).toBe(6000);
+    expect(item.originalHeight).toBe(4000);
+    expect(item.originalWidth).toBeGreaterThan(item.width);
+  });
+
+  it('未解码时原始尺寸也是 0，不做无意义的预估', () => {
+    const item = makeItem('a');
+    expect(item.originalWidth).toBe(0);
+    expect(item.originalHeight).toBe(0);
+  });
+
   it('解码失败时清空来源并带上原因', () => {
     const state = withItems('a');
     const failed = queueReducer(state, { type: 'failed', id: 'a', error: '无法解码' });
@@ -108,6 +128,8 @@ describe('队列 · 解码结果落库', () => {
       source: { width: 1, height: 1 } as unknown as HTMLCanvasElement,
       width: 1,
       height: 1,
+      originalWidth: 1,
+      originalHeight: 1,
     });
 
     expect(late).toBe(removed);

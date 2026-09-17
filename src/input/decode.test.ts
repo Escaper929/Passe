@@ -137,6 +137,26 @@ describe('解码 · 工作副本生成与释放', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it('原始尺寸单独带出来 —— 导出与内存守卫都要用它', async () => {
+    stubDecode(20000, 15000);
+
+    const result = await decodeWorkingCopy(new Blob(['x']));
+
+    // 工作副本被压到 9MP 以内
+    expect(result.width * result.height).toBeLessThanOrEqual(9e6 * 1.01);
+    expect(result.downscaled).toBe(true);
+    // 但原始尺寸必须原样保留：拿工作副本尺寸去评估导出会低估一个数量级
+    expect(result.originalWidth).toBe(20000);
+    expect(result.originalHeight).toBe(15000);
+  });
+
+  it('无需降采样时原始尺寸与工作副本尺寸相同', async () => {
+    stubDecode(1200, 900);
+    const result = await decodeWorkingCopy(new Blob(['x']));
+    expect(result.originalWidth).toBe(result.width);
+    expect(result.originalHeight).toBe(result.height);
+  });
+
   it('不需要降采样时直接交出位图本身，且绝不能 close 它', async () => {
     const { bitmap, close } = stubDecode(1200, 900);
 

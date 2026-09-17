@@ -184,7 +184,13 @@ export class GalleryFramingEngine {
     });
   }
 
-  /** 触发浏览器下载。 */
+  /**
+   * 触发浏览器下载。
+   *
+   * 注意这里拿的是**已经在内存里的**图。要导出全分辨率成品，应先
+   * `reopenFullResolution(file)` 重解原图，导出后立刻 `disposeSource`，
+   * 否则那张全分辨率位图会一直留着（见 src/input/decode.ts 的说明）。
+   */
   static async download(
     image: RenderSource,
     filename = 'passe-framed.jpg',
@@ -193,15 +199,26 @@ export class GalleryFramingEngine {
     renderOptions: RenderOptions = {},
   ): Promise<void> {
     const blob = await this.exportBlob(image, config, exportOpts, renderOptions);
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
+    saveBlob(blob, filename);
   }
+}
+
+/**
+ * 把 Blob 存成文件。
+ *
+ * 单独抽出来是因为导出流程被拆成了"重解原图 → 渲染 → 保存 → 释放"四步，
+ * 保存这一步得能被单独调用。objectURL 用完立即回收 —— 8K 成品的 blob
+ * 是几十 MB 级别，忘了 revoke 就是一直占着。
+ */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
 function assertCanvasBudget(canvasW: number, canvasH: number): void {

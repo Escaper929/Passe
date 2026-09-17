@@ -69,8 +69,18 @@ export function planWorkingCopy(
 
 export interface DecodedImage {
   source: RenderSource;
+  /** 工作副本尺寸 */
   width: number;
   height: number;
+  /**
+   * 原始文件尺寸。
+   *
+   * 必须单独带出来：导出走的是按需重解的全分辨率图，而内存守卫要评估的
+   * 正是那张图的装裱结果。拿工作副本的尺寸去算，守卫会认为 20000 × 15000
+   * 的扫描件"装得下"（工作副本只有 9MP），然后用户白等几十秒才看到报错。
+   */
+  originalWidth: number;
+  originalHeight: number;
   /** 是否为控制内存做过降采样 */
   downscaled: boolean;
 }
@@ -107,6 +117,8 @@ export async function decodeWorkingCopy(
       source: bitmap,
       width: bitmap.width,
       height: bitmap.height,
+      originalWidth: bitmap.width,
+      originalHeight: bitmap.height,
       downscaled: false,
     };
   }
@@ -127,6 +139,8 @@ export async function decodeWorkingCopy(
       source: canvas,
       width: plan.width,
       height: plan.height,
+      originalWidth: bitmap.width,
+      originalHeight: bitmap.height,
       downscaled: true,
     };
   } finally {

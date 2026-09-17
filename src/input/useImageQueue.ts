@@ -169,6 +169,8 @@ export function useImageQueue(options: UseImageQueueOptions = {}): ImageQueueApi
                 source: result.source,
                 width: result.width,
                 height: result.height,
+                originalWidth: result.originalWidth,
+                originalHeight: result.originalHeight,
               });
             } catch (error) {
               dispatch({

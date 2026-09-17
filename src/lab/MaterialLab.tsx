@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { ChoiceGrid, Section, Slider, ToggleRow } from '@/components/controls';
 import { GalleryFramingEngine } from '@/engine/GalleryFramingEngine';
 import type { PaperTextureMode } from '@/engine/noise';
 import { analyzeSurface, MATBOARD_PRESETS } from '@/engine/palette';
 import { createPreviewSource, hasImageFile } from '@/engine/source';
 import type { FrameConfig, LayerToggles, RenderSource } from '@/engine/types';
 import ImageTray from '@/input/ImageTray';
-import { useImageQueue } from '@/input/useImageQueue';
+import type { ImageQueueApi } from '@/input/useImageQueue';
 
 import { createTestPattern } from './testPattern';
 
@@ -116,85 +117,16 @@ function computeSampleRegion(
   };
 }
 
-/* ─────────────────────────── 通用控件 ─────────────────────────── */
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="border-t border-studio-line pt-5">
-      <h3 className="mb-3 text-xs tracking-wider text-[#777] uppercase">{title}</h3>
-      {children}
-    </section>
-  );
-}
-
-function Slider({
-  label,
-  value,
-  min,
-  max,
-  step,
-  display,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  display: string;
-  onChange: (next: number) => void;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1 flex justify-between text-xs text-[#888]">
-        <span>{label}</span>
-        <span className="text-[#BBB]">{display}</span>
-      </span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(event) => onChange(Number.parseFloat(event.target.value))}
-        className="h-1 w-full accent-white"
-      />
-    </label>
-  );
-}
-
-function LayerSwitch({
-  label,
-  hint,
-  checked,
-  onChange,
-}: {
-  label: string;
-  hint: string;
-  checked: boolean;
-  onChange: (next: boolean) => void;
-}) {
-  return (
-    <label className="flex cursor-pointer items-start gap-3 py-1.5">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        className="mt-0.5 accent-white"
-      />
-      <span>
-        <span className={`block text-xs ${checked ? 'text-[#DDD]' : 'text-[#666]'}`}>{label}</span>
-        <span className="block text-[10px] text-[#555]">{hint}</span>
-      </span>
-    </label>
-  );
-}
-
 /* ─────────────────────────── 验证台主体 ─────────────────────────── */
 
-export default function MaterialLab() {
-  const queue = useImageQueue();
-
+export default function MaterialLab({
+  queue,
+  onBackToStudio,
+}: {
+  /** 由 App 持有，两个视图共享同一份队列 */
+  queue: ImageQueueApi;
+  onBackToStudio?: () => void;
+}) {
   // 内置测试图作为兜底素材，保证打开即有所见（队列为空时用它）。
   // 用惰性初始化而非 effect，否则会多出一帧空白并触发 setState-in-effect。
   const [testPattern] = useState<RenderSource | null>(() => {
@@ -369,12 +301,21 @@ export default function MaterialLab() {
         <header className="flex items-center justify-between border-b border-studio-line px-6 py-3">
           <div>
             <p className="text-[10px] tracking-[0.3em] text-[#777] uppercase">Passe · 衬境</p>
-            <h1 className="text-sm font-medium text-white">材质验证台 · 阶段 2</h1>
+            <h1 className="text-sm font-medium text-white">材质验证台</h1>
           </div>
           <div className="flex items-center gap-3 text-[11px] text-[#666]">
-            <span className="max-w-[32ch] truncate" title={sourceLabel}>
+            <span className="max-w-[30ch] truncate" title={sourceLabel}>
               {sourceLabel}
             </span>
+            {onBackToStudio ? (
+              <button
+                type="button"
+                onClick={onBackToStudio}
+                className="rounded border border-[#333] px-3 py-1.5 text-[#BBB] transition-colors hover:border-[#555] hover:text-white"
+              >
+                回到调校台
+              </button>
+            ) : null}
           </div>
         </header>
 
@@ -462,7 +403,7 @@ export default function MaterialLab() {
         <Section title="图层逐层开关">
           <div className="-my-1">
             {LAYER_LABELS.map((item) => (
-              <LayerSwitch
+              <ToggleRow
                 key={item.key}
                 label={item.label}
                 hint={item.hint}
@@ -474,30 +415,16 @@ export default function MaterialLab() {
         </Section>
 
         <Section title="卡纸材质">
-          <div className="grid grid-cols-2 gap-2">
-            {MATBOARD_PRESETS.map((preset) => {
-              const active = config.matColor === preset.color;
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  onClick={() => patchConfig({ matColor: preset.color })}
-                  className={`flex items-center gap-2 rounded border p-2 text-left text-[11px] transition-colors ${
-                    active
-                      ? 'border-white bg-[#28282A] text-white'
-                      : 'border-[#262628] bg-[#1C1C1E] text-[#999] hover:border-[#38383A]'
-                  }`}
-                >
-                  <span
-                    aria-hidden
-                    className="h-3.5 w-3.5 shrink-0 rounded-full border border-black/20"
-                    style={{ background: preset.color }}
-                  />
-                  {preset.name}
-                </button>
-              );
-            })}
-          </div>
+          <ChoiceGrid
+            columns={2}
+            value={config.matColor ?? null}
+            onChange={(next) => patchConfig({ matColor: next ?? undefined })}
+            options={MATBOARD_PRESETS.map((preset) => ({
+              value: preset.color,
+              label: preset.name,
+              swatch: preset.color,
+            }))}
+          />
           {tone && (
             <p className="mt-2 text-[10px] text-[#555]">
               相对亮度 {tone.luminance.toFixed(4)} · {tone.isLight ? '浅色卡纸' : '深色卡纸'}
@@ -509,51 +436,28 @@ export default function MaterialLab() {
         </Section>
 
         <Section title="纸纹叠加方式（对拍用）">
-          <div className="grid grid-cols-2 gap-1.5">
-            {(
-              [
-                { id: 'multiply-screen', label: '乘算 + 滤色（修正）' },
-                { id: 'soft-light', label: 'soft-light（指南原方案）' },
-              ] as const
-            ).map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => setTextureMode(option.id)}
-                className={`rounded border px-2 py-1.5 text-[11px] transition-colors ${
-                  textureMode === option.id
-                    ? 'border-white bg-[#28282A] text-white'
-                    : 'border-[#262628] bg-[#1C1C1E] text-[#888] hover:border-[#38383A]'
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <ChoiceGrid
+            columns={2}
+            value={textureMode}
+            onChange={setTextureMode}
+            options={[
+              { value: 'multiply-screen', label: '乘算 + 滤色（修正）' },
+              { value: 'soft-light', label: 'soft-light（指南原方案）' },
+            ]}
+          />
           <p className="mt-2 text-[10px] leading-relaxed text-[#555]">
             切到炭黑展厅对比两者：原方案在深色卡纸上几乎看不到纸纹，这就是修掉的问题。
           </p>
         </Section>
 
         <Section title="构图">
-          <div className="mb-4 grid grid-cols-4 gap-1.5">
-            {ASPECTS.map((item) => {
-              const active = config.targetAspect === item.value;
-              return (
-                <button
-                  key={item.label}
-                  type="button"
-                  onClick={() => patchConfig({ targetAspect: item.value })}
-                  className={`rounded border py-1.5 text-center text-[11px] transition-colors ${
-                    active
-                      ? 'border-white bg-[#28282A] text-white'
-                      : 'border-[#262628] bg-[#1C1C1E] text-[#888] hover:border-[#38383A]'
-                  }`}
-                >
-                  {item.label}
-                </button>
-              );
-            })}
+          <div className="mb-4">
+            <ChoiceGrid
+              columns={4}
+              value={config.targetAspect ?? null}
+              onChange={(next) => patchConfig({ targetAspect: next })}
+              options={ASPECTS.map((item) => ({ value: item.value, label: item.label }))}
+            />
           </div>
           <div className="space-y-4">
             <Slider
