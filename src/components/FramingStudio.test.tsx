@@ -21,9 +21,11 @@ import { FramingStudio } from './FramingStudio';
  * 三样都接上替身，导出的每一步才是可断言的事实。
  *
  * 另一条纪律：每个用例都必须**等到导出的终态**（状态条出现"已导出"、按钮回到可点）
- * 才算结束。导出是异步的，测试超时时它并不会停下 —— 残留的回调会继续往
- * React 的 act 队列里塞更新，把下一个用例的 act 调用撞成"overlapping act()"，
- * 表现为一片毫无头绪的连带失败。这类污染排查过一次就够了。
+ * 才算结束。导出是异步的，用例超时时它并不会停下 —— 残留回调会一边继续往 React 的
+ * act 队列里塞更新（把下一个用例的 act 撞成"overlapping act()"），一边继续改共享的
+ * 计数器（下一个用例于是报出 "expected 2 to be 1" 这种与它自己毫无关系的错）。
+ * 三道防线：等终态、waitFor 带 label、afterEach 再做一道收尾隔离。
+ * 这类污染排查过一次就够了。
  */
 
 let latestQueue: ImageQueueApi | null = null;
@@ -129,6 +131,22 @@ async function mount(node: React.ReactNode) {
 }
 
 afterEach(async () => {
+  /**
+   * 失败路径的隔离：用例结束时若还有导出在跑，等它收尾再拆组件。
+   *
+   * 导出是异步的，用例超时并不会让它停下 —— 它会继续跑完，然后调一次
+   * createObjectURL、往下载记录里塞一个文件名，而下一个用例的计数器已经归零了。
+   * 症状是下一个用例报出 "expected 2 to be 1" 这种与它自己毫无关系的错。
+   * 这里不作为失败（真原因在它自己的用例里已经报过），只是别让它越界。
+   */
+  await waitFor(
+    () => {
+      const button = exportButtonIfAny();
+      return !button || !(button.textContent ?? '').includes('正在渲染');
+    },
+    { timeout: 3000, label: '等仍在进行的导出收尾' },
+  ).catch(() => undefined);
+
   await act(async () => {
     root?.unmount();
   });
@@ -150,13 +168,18 @@ function findButton(label: string): HTMLButtonElement {
   return match as HTMLButtonElement;
 }
 
-function exportButton(): HTMLButtonElement {
+function exportButtonIfAny(): HTMLButtonElement | null {
   const buttons = Array.from(container?.querySelectorAll('button') ?? []);
   const match = buttons.find((button) =>
     /导出画廊装裱作品|正在渲染/.test(button.textContent ?? ''),
   );
+  return (match as HTMLButtonElement) ?? null;
+}
+
+function exportButton(): HTMLButtonElement {
+  const match = exportButtonIfAny();
   if (!match) throw new Error('找不到导出按钮');
-  return match as HTMLButtonElement;
+  return match;
 }
 
 /** 面板里展示的文件名（dd 的 title 属性，不受截断影响）。 */

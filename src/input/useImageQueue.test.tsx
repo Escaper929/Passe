@@ -157,11 +157,6 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-/**
- * 反复刷新微任务与计时器，直到条件成立或超时。
- * 见 @/test/waitFor。
- */
-
 function imageFile(name: string, type = 'image/jpeg', size = 4096): File {
   return new File([new Uint8Array(Math.min(size, 16))], name, { type });
 }
