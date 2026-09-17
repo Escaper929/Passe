@@ -4,12 +4,15 @@
  * 与材质验证台的分工：验证台用来判断"材质像不像真的"（逐层开关、1:1 放大镜），
  * 调校台用来把一张照片调成成品并导出。两者共用同一个引擎和同一份输入队列。
  *
- * 相比开发指南 §4 的原始版本，这里做了四处必要的改动：
+ * 相比开发指南 §4 的原始版本，这里做了五处必要的改动：
  * 1. 预览走降采样副本。原版把原图直接交给渲染器，8K 扫描件拖一次滑杆要重绘上亿像素。
  * 2. 补上 §4 遗漏的三个参数：纸张颗粒强度、内阴影半径、斜切宽度 —— FrameConfig 里
  *    定义了却没有控件，等于用户永远调不到。
  * 3. 预览背板跟随卡纸亮度翻转。深色工作台配炭黑卡纸时成品边界会整个消失。
  * 4. 导出前过一遍内存守卫，并在导出时按需重解原图、用完立刻释放。
+ * 5. 预览画布的显示尺寸自己算。原版指望 CSS 的 max-height/max-width 把它压进容器，
+ *    但画布是替换元素、而外层高度是按内容撑开的（详见 previewFit.ts），
+ *    结果是成品把整列顶出 h-screen，底部连同状态条一起掉到视口外。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -28,6 +31,7 @@ import { FILE_INPUT_ACCEPT } from '@/input/validate';
 
 import { buildExportPlan, DEFAULT_EXPORT_SIZE_ID, EXPORT_SIZES } from './exportPlan';
 import { previewBacking } from './previewBacking';
+import { fitPreview } from './previewFit';
 
 /**
  * 实时预览的短边上限。
@@ -36,6 +40,15 @@ import { previewBacking } from './previewBacking';
  * 所以 1200px 预览和 8K 成品的比例严格一致。
  */
 const PREVIEW_SHORT_SIDE = 1200;
+
+/**
+ * 成品与背板之间强行留出的余量（每一侧）。
+ *
+ * 描边和投影是画在元素盒子**外面**的，背板的 `overflow-hidden` 会把贴着边的那一侧
+ * 整条裁掉 —— 而贴着边的那一侧恰恰是成品与背板相接的地方，正是最需要那条 1px
+ * 中性描边来分界的位置。留 4px 就足够让它露出来。
+ */
+export const PREVIEW_INSET = 4;
 
 const ASPECTS = [
   { value: null, label: '自适应' },
@@ -84,12 +97,16 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
   const [renderError, setRenderError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
+  /** 预览背板能给成品的净空间（CSS 像素）。0 表示还没量出来 */
+  const [previewBox, setPreviewBox] = useState({ w: 0, h: 0 });
   // 钢印用的是系统字体。字体没就绪前渲染，文字会以兜底字体画进画布 —— 那是一张错的成品图
   const [fontsReady, setFontsReady] = useState(
     () => typeof document === 'undefined' || !document.fonts,
   );
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** 预览背板本身。量的是它，而不是画布 —— 画布尺寸由这个结果决定，量它会形成回环 */
+  const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const activeItem = queue.active;
@@ -114,6 +131,48 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
   const previewSource = useMemo(
     () => (source ? createPreviewSource(source, PREVIEW_SHORT_SIDE) : null),
     [source],
+  );
+
+  /**
+   * 量出成品可用的净空间。
+   *
+   * 量的是背板 —— 它的尺寸由 flex 布局决定，和画布无关。反过来量画布会形成回环：
+   * 画布一大就把测量对象一起撑大，于是永远缩不下去，这正是原先的故障。
+   */
+  useEffect(() => {
+    const box = previewBoxRef.current;
+    if (!box) return;
+
+    const measure = () => setPreviewBox({ w: box.clientWidth, h: box.clientHeight });
+    measure();
+
+    // jsdom 与老浏览器没有 ResizeObserver，退回监听窗口尺寸
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+
+  /**
+   * 画布最终的显示尺寸。
+   *
+   * frameSize 是引擎渲染出来的画布像素尺寸（短边 1200），按可用空间等比缩小后，
+   * 成品必然落在背板之内 —— "整幅画面都看得到"由这段算术保证，而不是指望浏览器
+   * 把那串百分比高度解开。
+   */
+  const previewFit = useMemo(
+    () =>
+      fitPreview({
+        boxWidth: Math.max(0, previewBox.w - PREVIEW_INSET * 2),
+        boxHeight: Math.max(0, previewBox.h - PREVIEW_INSET * 2),
+        imageWidth: frameSize.w,
+        imageHeight: frameSize.h,
+      }),
+    [previewBox, frameSize],
   );
 
   useEffect(() => {
@@ -214,7 +273,7 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
     <div className="flex h-screen w-full overflow-hidden bg-studio-bg font-sans text-[#E0E0E0]">
       {/* 视口 */}
       <main
-        className="relative flex flex-1 flex-col select-none"
+        className="relative flex min-w-0 flex-1 flex-col select-none"
         onDragOver={(event) => {
           if (!hasImageFile(event.dataTransfer)) return;
           event.preventDefault();
@@ -254,17 +313,24 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
         </header>
 
         {/* 预览背板。浅色卡纸配深背板、深色卡纸配浅背板，成品才读得出边界 */}
-        <div className="flex flex-1 items-center justify-center overflow-hidden p-6">
+        {/* min-h-0 是必需的：flex 子项默认 min-height: auto，会被超大内容顶着长高，
+            整列于是溢出 h-screen，把底部状态条推出视口 */}
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6">
           <div
+            ref={previewBoxRef}
             className="flex h-full w-full items-center justify-center overflow-hidden rounded-sm border border-studio-line transition-colors duration-200"
             style={{ background: backing.background }}
           >
             {source ? (
-              <div className="relative inline-flex max-h-full max-w-full items-center justify-center">
+              <div className="relative inline-flex items-center justify-center">
+                {/* 尺寸由 fitPreview 算出后直接钉住，不再依赖 CSS 百分比上限。
+                    未量出可用区域时给 0，宁可空白一帧也不让画面溢出去 */}
                 <canvas
                   ref={previewCanvasRef}
-                  className="h-auto w-auto max-h-full max-w-full rounded-xs transition-all duration-75"
+                  className="rounded-xs transition-all duration-75"
                   style={{
+                    width: `${previewFit.width}px`,
+                    height: `${previewFit.height}px`,
                     outline: `1px solid ${backing.outline}`,
                     boxShadow: '0 24px 48px rgba(0, 0, 0, 0.45)',
                   }}

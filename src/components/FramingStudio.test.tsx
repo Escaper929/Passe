@@ -9,7 +9,7 @@ import { useImageQueue, type ImageQueueApi } from '@/input/useImageQueue';
 import { installCanvasHarness } from '@/test/canvasHarness';
 import { waitFor } from '@/test/waitFor';
 
-import { FramingStudio } from './FramingStudio';
+import { FramingStudio, PREVIEW_INSET } from './FramingStudio';
 
 /**
  * 调校台测试。
@@ -213,6 +213,13 @@ function framedMegapixels(): number {
   return Number(match[1]);
 }
 
+/** 从状态条读出引擎渲染出来的成品画布尺寸。 */
+function frameBox(): { w: number; h: number } {
+  const match = /外框\s+(\d+)\s*×\s*(\d+)/.exec(text());
+  if (!match) throw new Error('读不到成品外框尺寸');
+  return { w: Number(match[1]), h: Number(match[2]) };
+}
+
 /** 等一次导出彻底走完：状态条出现结论，按钮回到可点。 */
 async function waitForExportDone(): Promise<void> {
   await waitFor(() => downloads.length > 0, { label: '下载被触发' });
@@ -249,6 +256,60 @@ describe('调校台 · 空态', () => {
     expect(text()).toContain('装裱外框');
     expect(text()).toContain('portra400');
     expect(exportButton().disabled).toBe(false);
+  });
+});
+
+describe('调校台 · 预览尺寸', () => {
+  /**
+   * 复现用户报的"整个画面下边看不到"。
+   *
+   * 引擎渲出来的画布是按像素尺寸定的（短边 1200，成品约 1450 × 1180），
+   * 直接交给 CSS 就是一张比视口还高的图：它会把整列撑出 h-screen，
+   * 底部连同状态条一起掉出可视区。
+   */
+  it('成品按可用区域缩放，画布的显示尺寸绝不超出背板', async () => {
+    // jsdom 没有布局引擎，clientWidth/clientHeight 恒为 0。
+    // 给它两个确定的数才谈得上验证"量出来的空间真的被用上了"。
+    // 用覆盖自身属性而不是 spyOn：这两个 getter 挂在 Element.prototype 上，
+    // 在 HTMLElement.prototype 上加一层再删掉，语义最直白。
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => 800,
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get: () => 600,
+    });
+
+    try {
+      await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+      await seedImage(latestQueue!);
+      await waitFor(() => frameBox().w > 0, { label: '预览渲染出成品' });
+
+      const canvas = container?.querySelector('canvas');
+      if (!canvas) throw new Error('找不到预览画布');
+
+      const frame = frameBox();
+      // 画布自身的像素尺寸在这一档是短边 1200，远大于可用区域
+      expect(canvas.width).toBeGreaterThan(800);
+
+      const shownW = Number.parseFloat(canvas.style.width);
+      const shownH = Number.parseFloat(canvas.style.height);
+      // 背板每侧还要留出描边与投影的余量，那条 1px 描边才不会被裁掉
+      const availableW = 800 - PREVIEW_INSET * 2;
+      const availableH = 600 - PREVIEW_INSET * 2;
+
+      expect(shownW).toBeGreaterThan(0);
+      expect(shownW).toBeLessThanOrEqual(availableW);
+      expect(shownH).toBeLessThanOrEqual(availableH);
+      // 受限的那一条边要用满，否则是白白浪费背板空间
+      expect(shownW === availableW || shownH === availableH).toBe(true);
+      // 等比缩放，画面不会被拉变形
+      expect(Math.abs(shownW / shownH - frame.w / frame.h)).toBeLessThan(0.005);
+    } finally {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+    }
   });
 });
 
