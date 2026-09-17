@@ -106,16 +106,18 @@ describe('内存守卫 · 建议降采样尺寸', () => {
   const W = 12000;
   const H = 9000;
 
-  it('按建议尺寸缩过之后确实能导出', () => {
+  it('按建议尺寸缩过之后落回"余量充足"档，而不是贴着上限', () => {
     const suggestion = suggestMaxDimension(W, H);
     expect(suggestion).not.toBeNull();
-    expect(scaledLevel(W, H, suggestion as number, MAX_CANVAS_PIXELS)).not.toBe('blocked');
+    // 这一条是关键：点完"一键修正"之后不该还留着一条"偏重"警告；
+    // 盯上限本身的话，用户修完看到的还是同一个警告，等于白点。
+    expect(scaledLevel(W, H, suggestion as number, MAX_CANVAS_PIXELS)).toBe('ok');
   });
 
-  it('建议值是紧的：再放大 5% 就会重新超限', () => {
+  it('建议值不是"越大越好"：放大 5% 跌出余量充足档，放大 50% 才重新超限', () => {
     const suggestion = suggestMaxDimension(W, H) as number;
-    const bumped = Math.ceil(suggestion * 1.05);
-    expect(scaledLevel(W, H, bumped, MAX_CANVAS_PIXELS)).toBe('blocked');
+    expect(scaledLevel(W, H, Math.ceil(suggestion * 1.05), MAX_CANVAS_PIXELS)).toBe('heavy');
+    expect(scaledLevel(W, H, Math.ceil(suggestion * 1.5), MAX_CANVAS_PIXELS)).toBe('blocked');
   });
 
   it('本来就装得下的图，建议值就是它自己的长边 —— 不该凭空缩图', () => {

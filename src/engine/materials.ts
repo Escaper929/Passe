@@ -150,31 +150,24 @@ function drawCameraVector(ctx: CanvasRenderingContext2D, x: number, y: number, s
   ctx.restore();
 }
 
-type CtxWithLetterSpacing = CanvasRenderingContext2D & { letterSpacing?: string };
-
-let letterSpacingSupport: boolean | null = null;
-
 /**
- * 探测 canvas 是否原生支持 letterSpacing。
- * Safari 17 之前不支持，需要逐字手动排版兜底。
- */
-function hasNativeLetterSpacing(ctx: CanvasRenderingContext2D): boolean {
-  if (letterSpacingSupport === null) {
-    letterSpacingSupport = 'letterSpacing' in ctx;
-  }
-  return letterSpacingSupport;
-}
-
-/** 仅供测试重建：清空 letterSpacing 支持探测的缓存。 */
-export function resetLetterSpacingProbe(): void {
-  letterSpacingSupport = null;
-}
-
-/**
- * 绘制带字距的居中文本。
+ * 绘制带字距的居中文本（钢印用）。
  *
- * 原生支持时直接赋 letterSpacing；不支持时按每字宽度累加自行排版，
- * 否则旧版 Safari 上钢印会挤成一团。
+ * **刻意不使用 `ctx.letterSpacing`，一律逐字排版。** 两个理由，都是实测出来的：
+ *
+ * 1. 原生 letterSpacing 把字距加在**每个**字符之后（末尾那个也加），而
+ *    `textAlign: 'center'` 是按"含尾随字距的推进宽度"居中的 —— 于是墨迹整体
+ *    左偏 tracking/2。实测 tracking = 4px 时偏 2.00px，正好是 tracking/2。
+ *    钢印上方那台相机图标是按几何中心画的，两者就此错开：1200px 预览偏 1.2px，
+ *    8K 成品上到 8px。在 1.5px 级的压凹线宽上，图标与文字错开是看得出来的。
+ * 2. 老 Safari（17 之前）根本没有这个属性，本来也需要兜底。
+ *
+ * 与其维护两条会分叉的路径（而且其中一条永远只跑在一个浏览器里、进不了
+ * Skia 视觉回归基准），不如只留一条：逐字排版在任何环境下都落在同一个位置，
+ * 于是预览、导出、回归基准、各浏览器之间逐像素一致。
+ *
+ * 代价是失去跨字符的字形整形（kerning）。钢印内容是大写机型名 / 胶卷名配
+ * 2.4px 级字距，字距远大于任何 kerning 值，看不出来。
  */
 export function drawTrackedText(
   ctx: CanvasRenderingContext2D,
@@ -183,24 +176,18 @@ export function drawTrackedText(
   baselineY: number,
   tracking: number,
 ): void {
-  ctx.textAlign = 'center';
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-
-  if (hasNativeLetterSpacing(ctx)) {
-    (ctx as CtxWithLetterSpacing).letterSpacing = `${tracking}px`;
-    ctx.fillText(text, centerX, baselineY);
-    (ctx as CtxWithLetterSpacing).letterSpacing = '0px';
-    return;
-  }
 
   const chars = Array.from(text);
   if (chars.length === 0) return;
 
   const widths = chars.map((ch) => ctx.measureText(ch).width);
+  // 末尾不加字距：居中要按墨迹范围算，不能按"含尾随空隙的推进宽度"算，
+  // 否则就会重现上面第 1 条那个左偏
   const total = widths.reduce((sum, width) => sum + width, 0) + tracking * (chars.length - 1);
 
   let cursor = centerX - total / 2;
-  ctx.textAlign = 'left';
   chars.forEach((ch, index) => {
     ctx.fillText(ch, cursor, baselineY);
     cursor += widths[index] + tracking;

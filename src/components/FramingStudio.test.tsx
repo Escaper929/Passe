@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '@/App';
+import { HEAVY_LOAD } from '@/input/budget';
 import { useImageQueue, type ImageQueueApi } from '@/input/useImageQueue';
 import { installCanvasHarness } from '@/test/canvasHarness';
 import { waitFor } from '@/test/waitFor';
@@ -385,8 +386,13 @@ describe('调校台 · 内存守卫拦下导出', () => {
 
     expect(exportButton().disabled).toBe(false);
     expect(text()).toContain('取消尺寸修正');
-    // 修正后的外框必须真的落在安全区内，而不是只把按钮点亮
-    expect(framedMegapixels()).toBeLessThanOrEqual(TIGHT_LIMIT / 1e6);
+    // 修正之后警告必须整条消失。只把按钮点亮是不够的 ——
+    // 点完还挂着黄色"偏重"，用户会以为没修好（'ok' 档不渲染提示条，
+    // 所以"读不到警告文案"本身就是信号）。
+    expect(text()).not.toContain('超出画布安全上限');
+    expect(text()).not.toContain('变慢');
+    // 给的是"余量充足"档的尺寸，不是贴着上限的尺寸
+    expect(framedMegapixels()).toBeLessThanOrEqual((TIGHT_LIMIT / 1e6) * HEAVY_LOAD);
 
     const planned = shownFilename();
     const longSide = Number(/_(?<side>\d+)px\.jpg$/.exec(planned)?.groups?.side);

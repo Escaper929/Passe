@@ -115,7 +115,9 @@ export function assessFrame(
       message:
         `外框 ${framedW} × ${framedH}（${megapixels.toFixed(1)}MP）` +
         `超出画布安全上限 ${(limit / 1e6).toFixed(0)}MP。` +
-        (suggestion ? `把源图长边压到 ${suggestion}px 以内即可导出。` : `请调小边距比例后重试。`),
+        (suggestion
+          ? `把源图长边压到 ${suggestion}px 以内即可安全导出。`
+          : `请调小边距比例后重试。`),
     };
   }
 
@@ -142,7 +144,15 @@ export function assessFrame(
 }
 
 /**
- * 求"源图长边压到多少像素，装裱后才不会超限"。
+ * 求"源图长边压到多少像素，装裱后能落回**余量充足**的一档"。
+ *
+ * 刻意不瞄准上限本身。上限只是"不会崩"的线，贴着它给建议有两个代价：
+ * 用户点完"一键修正"后黄色"偏重"警告还挂在那里（语义上没错，但看起来像没修好），
+ * 而且此后每一次预览与导出都要按顶格内存跑。修正的意义本该是"回到轻松的那一档"，
+ * 所以目标定在 HEAVY_LOAD（上限的 55%）—— 按建议值缩过之后，
+ * `assessFrame` 判定的档位正好是 'ok'，警告消失。
+ *
+ * 也就是说：想拿最大可导出的尺寸，用户该去选 8K 预设；这里给的是"能顺畅干活"的尺寸。
  *
  * 外框像素随源图尺寸单调递增，因此可以二分。返回 null 表示即使压到
  * `floor` 仍然超限 —— 那说明是边距比例或比例约束出了问题，不是尺寸问题。
@@ -156,13 +166,15 @@ export function suggestMaxDimension(
 ): number | null {
   const input = toLayoutInput(config, DEFAULT_LAYOUT_INPUT);
   const longSide = Math.max(imageW, imageH);
+  /** 建议值要落进去的目标像素数。比上限低一档，不是上限本身 */
+  const target = limit * HEAVY_LOAD;
 
   const fits = (dimension: number): boolean => {
     const ratio = dimension / longSide;
     const w = Math.max(1, Math.round(imageW * ratio));
     const h = Math.max(1, Math.round(imageH * ratio));
     const framed = framedSize(w, h, input);
-    return framed.w * framed.h <= limit;
+    return framed.w * framed.h <= target;
   };
 
   if (!fits(floor)) return null;

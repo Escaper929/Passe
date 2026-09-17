@@ -86,7 +86,12 @@ export interface ExportPlan {
   framedH: number;
   budget: RenderBudget;
   canExport: boolean;
-  /** 被守卫拦下时，把上限设成它就能导出（以**源图长边**为口径） */
+  /**
+   * 被守卫拦下时，把上限设成它就能导出（以**源图长边**为口径）。
+   *
+   * 它瞄准的是"余量充足"档（上限的 HEAVY_LOAD），不是上限本身 ——
+   * 点完修正之后不该还留着一条黄色警告。
+   */
   suggestedMaxDimension: number | null;
   filename: string;
 }

@@ -127,7 +127,8 @@ describe('导出方案 · 外框尺寸与守卫联动', () => {
     expect(plan.budget.level).toBe('blocked');
     expect(plan.suggestedMaxDimension).not.toBeNull();
 
-    // 建议值必须真的管用：按它重新规划一次就该放行
+    // 建议值必须真的管用，而且要落进余量充足档 ——
+    // 只是"不再超限"不够：那样用户点完修正，黄色警告还在
     const fixed = buildExportPlan({
       source: SOURCE,
       config: {},
@@ -136,6 +137,7 @@ describe('导出方案 · 外框尺寸与守卫联动', () => {
       limit,
     });
     expect(fixed.canExport).toBe(true);
+    expect(fixed.budget.level).toBe('ok');
     expect(fixed.outputLongSide).toBeLessThan(SOURCE.width);
   });
 

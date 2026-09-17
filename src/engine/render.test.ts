@@ -2,7 +2,7 @@ import { createCanvas } from '@napi-rs/canvas';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { GalleryFramingEngine, MAX_CANVAS_PIXELS } from '@/engine/GalleryFramingEngine';
-import { drawTrackedText, resetLetterSpacingProbe } from '@/engine/materials';
+import { drawTrackedText } from '@/engine/materials';
 import type { FrameConfig, RenderSource } from '@/engine/types';
 
 /**
@@ -425,29 +425,80 @@ describe('图层开关', () => {
   });
 });
 
-describe('drawTrackedText · 旧版 Safari 的逐字排版兜底', () => {
-  it('原生不支持 letterSpacing 时按字宽累加并居中', () => {
-    resetLetterSpacingProbe();
+describe('drawTrackedText · 钢印文字必须与相机图标同心', () => {
+  /** 取整块画布上墨迹（alpha 明显不为 0 的像素）的左右边界。 */
+  function inkSpan(canvas: HTMLCanvasElement): { minX: number; maxX: number; center: number } {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('读取像素失败：无 2D 上下文');
 
+    const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        if (data[(y * width + x) * 4 + 3] <= 8) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+      }
+    }
+
+    return { minX, maxX, center: (minX + maxX) / 2 };
+  }
+
+  it('墨迹中心落在请求的中心上，不随字距偏移', () => {
+    const canvas = createNapiCanvas(800, 120);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('测试画布创建失败');
+
+    ctx.fillStyle = '#000000';
+    ctx.font = '600 24px sans-serif';
+
+    const CENTER = 400;
+    const TRACKING = 4;
+    drawTrackedText(ctx, 'LEICA M6', CENTER, 60, TRACKING);
+
+    // 这条断言就是拦住"改用原生 ctx.letterSpacing 更省事"那次改动的：
+    // 原生实现把末尾字距也算进居中宽度，实测整体左偏 tracking/2 = 2.00px，
+    // 于是文字与它上方那台按几何中心画的相机图标错开。
+    const span = inkSpan(canvas);
+    expect(span.maxX).toBeGreaterThan(span.minX);
+    expect(Math.abs(span.center - CENTER)).toBeLessThanOrEqual(1);
+  });
+
+  it('按每字宽度累加，且末尾字距不计入居中宽度', () => {
     const drawn: { text: string; x: number }[] = [];
-    const fake = {
-      textAlign: 'center',
+    const ctx = Object.create(null) as CanvasRenderingContext2D;
+    Object.assign(ctx, {
+      textAlign: 'left',
       textBaseline: 'middle',
       measureText: (text: string) => ({ width: text.length * 10 }),
       fillText: (text: string, x: number) => {
         drawn.push({ text, x });
       },
-    };
+    });
 
-    // 故意构造一个不含 letterSpacing 的上下文，强制走兜底分支
-    const ctxWithoutSpacing = Object.create(null) as CanvasRenderingContext2D;
-    Object.assign(ctxWithoutSpacing, fake);
-    resetLetterSpacingProbe();
+    drawTrackedText(ctx, 'ABC', 100, 50, 4);
 
-    drawTrackedText(ctxWithoutSpacing, 'ABC', 100, 50, 4);
-
-    // 三字各宽 10，字距 4，总宽 38，因此首字左边缘在 100 - 19 = 81
+    // 三字各宽 10，字距 4，墨迹总宽 10 + 4 + 10 + 4 + 10 = 38，
+    // 因此首字左边缘在 100 - 19 = 81
     expect(drawn.map((item) => item.x)).toEqual([81, 95, 109]);
     expect(drawn.map((item) => item.text)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('单字不带尾随字距，仍然居中', () => {
+    const drawn: { x: number }[] = [];
+    const ctx = Object.create(null) as CanvasRenderingContext2D;
+    Object.assign(ctx, {
+      textAlign: 'left',
+      textBaseline: 'middle',
+      measureText: () => ({ width: 20 }),
+      fillText: (_text: string, x: number) => {
+        drawn.push({ x });
+      },
+    });
+
+    drawTrackedText(ctx, 'M', 100, 50, 4);
+    expect(drawn.map((item) => item.x)).toEqual([90]);
   });
 });
