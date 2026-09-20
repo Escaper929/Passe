@@ -27,7 +27,9 @@ logs/
 coverage/
 .nyc_output/
 
-# 注意：视觉回归基准图（__snapshots__/）必须入库，不要忽略，否则回归测试失去意义
+# 视觉回归：基线（src/test/baselines/）必须入库，否则回归失去意义；
+# 诊断产物（实际渲染图 + 差异报告）只在失败时生成，不入库。
+src/test/visual/__out__/
 
 # env
 .env

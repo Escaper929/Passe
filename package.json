@@ -12,7 +12,9 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "visual:update": "UPDATE_VISUAL=all vitest run src/engine/visualRegression.test.ts",
+    "visual:report": "UPDATE_VISUAL=sheet vitest run src/engine/visualRegression.test.ts"
   },
   "dependencies": {
     "react": "^19.3.0",

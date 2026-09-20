@@ -26,11 +26,48 @@ export type FiberPolarity = 'shadow' | 'light' | 'neutral';
 
 const tiles = new Map<FiberPolarity, HTMLCanvasElement>();
 
+/** 三种极性各用一个固定种子，保证彼此不相关。 */
+const FIBER_SEEDS: Record<FiberPolarity, number> = {
+  shadow: 0x51ed2701,
+  light: 0x2f9b3d05,
+  neutral: 0x7a1f4c11,
+};
+
+/**
+ * 坐标哈希 → [0, 1) 均匀值。
+ *
+ * **刻意不用 `Math.random()`**，理由有两条，都是硬需求：
+ *
+ * 1. **引擎要成为输入的纯函数。** 原来用 Math.random 生成瓦片，
+ *    每次进程启动都换一片纤维，于是"同一张图重复导出"得到的是不同的成品。
+ *    更致命的是视觉回归基线无从谈起 —— 基线比对的前提是同样的输入
+ *    必须产出同样的像素，而随机瓦片让每次运行都不同。
+ * 2. **跨机器一致。** 混淆全程用 `Math.imul` 做 32 位整数乘法，
+ *    不经过浮点，因此在 macOS 本地与 CI 的 ubuntu 上跑出的是同一片噪声。
+ *    基线才能既在本地守门、又在 CI 守门。
+ *
+ * 统计性质与原实现一致：独立均匀分布、无空间结构、平铺无接缝，
+ * 因此"纸纹看起来是什么样"没有变化，只是从"每次不同"变成了"每次都一样"。
+ */
+function hash01(x: number, y: number, seed: number): number {
+  let h = Math.imul(x | 0, 0x27d4eb2d);
+  h = (h + Math.imul(y | 0, 0x165667b1)) | 0;
+  h = (h + seed) | 0;
+  h = Math.imul(h ^ (h >>> 15), 0x2545f491);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0x27d4eb2d);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
 /**
  * 取噪声瓦片（进程内单例，按极性缓存）。
  *
  * 瓦片是 256×256 的独立随机像素，不含任何空间结构，
  * 因此平铺时不会出现明显的接缝图案。
+ *
+ * **瓦片内容是确定的**：同极性每次生成的结果逐像素一致（清掉缓存重建也一样），
+ * 所以"预览看到的纸纹"与"导出得到的纸纹"是同一片，跨运行也相同。
  */
 export function getFiberTile(polarity: FiberPolarity): HTMLCanvasElement {
   const cached = tiles.get(polarity);
@@ -45,28 +82,32 @@ export function getFiberTile(polarity: FiberPolarity): HTMLCanvasElement {
 
   const image = ctx.createImageData(TILE_SIZE, TILE_SIZE);
   const data = image.data;
+  const seed = FIBER_SEEDS[polarity];
 
-  for (let i = 0; i < data.length; i += 4) {
-    const n = Math.random();
-    let v: number;
-    switch (polarity) {
-      case 'shadow':
-        // 以白为中性：只有压暗的斑点，配合 multiply
-        v = 255 - n * 255;
-        break;
-      case 'light':
-        // 以黑为中性：只有提亮的斑点，配合 screen
-        v = n * 255;
-        break;
-      case 'neutral':
-        // 以中灰为中性：双向扰动，配合 soft-light / overlay
-        v = 128 + (n - 0.5) * 255;
-        break;
+  for (let y = 0; y < TILE_SIZE; y += 1) {
+    for (let x = 0; x < TILE_SIZE; x += 1) {
+      const n = hash01(x, y, seed);
+      let v: number;
+      switch (polarity) {
+        case 'shadow':
+          // 以白为中性：只有压暗的斑点，配合 multiply
+          v = 255 - n * 255;
+          break;
+        case 'light':
+          // 以黑为中性：只有提亮的斑点，配合 screen
+          v = n * 255;
+          break;
+        case 'neutral':
+          // 以中灰为中性：双向扰动，配合 soft-light / overlay
+          v = 128 + (n - 0.5) * 255;
+          break;
+      }
+      const i = (y * TILE_SIZE + x) * 4;
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
+      data[i + 3] = 255;
     }
-    data[i] = v;
-    data[i + 1] = v;
-    data[i + 2] = v;
-    data[i + 3] = 255;
   }
 
   ctx.putImageData(image, 0, 0);

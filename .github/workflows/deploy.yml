@@ -36,6 +36,17 @@ jobs:
       - name: 单元测试
         run: npm run test
 
+      # 视觉回归失败时，把实际渲染图与差异报告带出来 ——
+      # 否则日志里只剩"某条探针第几个点偏了多少"，没法一眼看出画面变成了什么样
+      - name: 上传视觉回归诊断产物
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-diagnostics
+          path: src/test/visual/__out__/
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: 格式检查
         run: npm run format:check
 
