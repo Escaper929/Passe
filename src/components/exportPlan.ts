@@ -8,6 +8,15 @@
 
 import type { FrameConfig } from '@/engine/types';
 import { assessFrame, suggestMaxDimension, type RenderBudget } from '@/input/budget';
+import {
+  DEFAULT_TARGET_DPI,
+  achievedDpi,
+  findPrintSize,
+  fitInsidePaper,
+  printSourceLongSide,
+  requiredFramedLongSidePx,
+  type PrintPlan,
+} from './printSize';
 
 export interface ExportSizeOption {
   id: string;
@@ -73,7 +82,12 @@ export function buildExportFilename(input: FilenameInput): string {
 }
 
 export interface ExportPlan {
-  /** 实际生效的尺寸预设 id；被守卫修正后为 'custom' */
+  /**
+   * 实际生效的尺寸档 id；被守卫修正后为 'custom'。
+   *
+   * 可能来自 `EXPORT_SIZES`（像素档）或 `PRINT_SIZES`（纸规格）—— 两者共用这一个
+   * 取值，于是守卫、批量、文件名都不需要知道"用户选的是纸还是像素"。
+   */
   sizeId: string;
   /** 输出长边像素 */
   outputLongSide: number;
@@ -93,18 +107,23 @@ export interface ExportPlan {
    * 点完修正之后不该还留着一条黄色警告。
    */
   suggestedMaxDimension: number | null;
+  /** 选了纸规格时的物理换算；选像素档时为 null */
+  print: PrintPlan | null;
   filename: string;
 }
 
 export interface BuildExportPlanInput {
   source: { width: number; height: number };
   config: FrameConfig;
+  /** `EXPORT_SIZES` 或 `PRINT_SIZES` 里的 id */
   sizeId: string;
   /**
    * 直接指定源图长边上限，优先于 sizeId。
    * 守卫拦下导出后用建议值一键修复，走的就是这条路。
    */
   overrideMaxDimension?: number | null;
+  /** 目标打印 DPI。仅当 sizeId 是纸规格时有意义 */
+  targetDpi?: number;
   /** 相机机型，进文件名 */
   cameraModel?: string;
   /** 原始文件名，进文件名 */
@@ -117,10 +136,52 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
   const { source, config, sizeId, limit } = input;
 
   const override = input.overrideMaxDimension ?? null;
-  const preset = EXPORT_SIZES.find((option) => option.id === sizeId) ?? EXPORT_SIZES[0];
-  const requested = override ?? preset.maxDimension;
+  const paper = findPrintSize(sizeId);
+  const preset = paper
+    ? null
+    : (EXPORT_SIZES.find((option) => option.id === sizeId) ?? EXPORT_SIZES[0]);
 
   const sourceLongSide = Math.max(source.width, source.height);
+
+  /**
+   * 选了纸就按目标 DPI **反推**所需像素；否则仍走像素档。
+   *
+   * 反推分两步，中间那步最容易漏：纸装的是**含卡纸的成品图**，而 `maxDimension`
+   * 的口径是**照片**长边，所以要先算"成品图需要多少像素"，再除以装裱放大系数。
+   * 详见 printSize.ts 的文件头。
+   *
+   * 放大系数与比例都取自**源图尺寸下的布局**：`calculateLayout` 对像素严格线性，
+   * 所以这两个量与最终输出尺寸无关，不必回代求解。
+   */
+  let printCore: Omit<PrintPlan, 'achievedDpi'> | null = null;
+  let requested = override ?? preset?.maxDimension ?? null;
+
+  if (paper) {
+    const dpi = input.targetDpi ?? DEFAULT_TARGET_DPI;
+    const atSource = assessFrame(source.width, source.height, config, limit);
+    const framedLong = Math.max(atSource.framedW, atSource.framedH);
+    const framedShort = Math.min(atSource.framedW, atSource.framedH);
+    const aspect = framedLong / framedShort;
+    const matExpansion = framedLong / sourceLongSide;
+
+    const fit = fitInsidePaper(paper, aspect);
+    const requiredLongSide = printSourceLongSide(
+      requiredFramedLongSidePx(paper, dpi, aspect),
+      matExpansion,
+    );
+
+    requested = override ?? requiredLongSide;
+    printCore = {
+      paperId: paper.id,
+      paperLabel: paper.label,
+      dpi,
+      printedLongMm: fit.longMm,
+      printedShortMm: fit.shortMm,
+      limitedBy: fit.limitedBy,
+      requiredLongSide,
+    };
+  }
+
   // 只降不升：没有哪种重采样能凭空造出细节
   const outputLongSide = requested === null ? sourceLongSide : Math.min(sourceLongSide, requested);
 
@@ -132,7 +193,7 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
   const canExport = budget.level !== 'blocked';
 
   return {
-    sizeId: override === null ? preset.id : 'custom',
+    sizeId: override === null ? (preset?.id ?? sizeId) : 'custom',
     outputLongSide,
     outputW,
     outputH,
@@ -145,6 +206,21 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
     suggestedMaxDimension: canExport
       ? null
       : suggestMaxDimension(source.width, source.height, config, limit),
+    /**
+     * 实际 DPI 按**成品图**的实际像素算 —— 纸装的是成品图，不是照片。
+     *
+     * 它同时兜住了两件事：源图不够（只降不升），以及内存守卫把尺寸压小了。
+     * 两种情况下用户看到的都是同一个诚实的数字。
+     */
+    print: printCore
+      ? {
+          ...printCore,
+          achievedDpi: achievedDpi(
+            Math.max(budget.framedW, budget.framedH),
+            printCore.printedLongMm,
+          ),
+        }
+      : null,
     filename: buildExportFilename({
       cameraModel: input.cameraModel,
       sourceName: input.sourceName,
