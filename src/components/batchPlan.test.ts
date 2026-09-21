@@ -8,6 +8,7 @@ import {
   uniquifyFilenames,
   type BatchCandidate,
 } from './batchPlan';
+import { DEFAULT_QUALITY } from './exportFormat';
 
 const CONFIG = { marginRatio: 0.14, bottomWeight: 1.25, targetAspect: null };
 
@@ -194,6 +195,47 @@ describe('buildBatchPlan · 文件名', () => {
 
     expect(plan.skipped).toHaveLength(1);
     expect(plan.exportable.map((entry) => entry.filename)).toEqual(['Passe_scan_2000px.jpg']);
+  });
+
+  /**
+   * 格式必须由这里透传下去。
+   *
+   * 批量与单张若各认一份"当前格式"，会出现最尴尬的一种不一致：面板上写着 PNG、
+   * 点"导出全部"拿到的却是一批 .jpg。所以断言不看数字，只看整批的扩展名
+   * 与 MIME 是不是一起换了。
+   */
+  it('格式与质量整批透传：扩展名和 MIME 一起换', () => {
+    const items = [item('a', 'one.tif', 2000, 1500), item('b', 'two.tif', 2000, 1500)];
+
+    const jpeg = buildBatchPlan({ items, config: CONFIG, sizeId: '8k' });
+    expect(jpeg.exportable.map((entry) => entry.filename)).toEqual([
+      'Passe_one_2000px.jpg',
+      'Passe_two_2000px.jpg',
+    ]);
+    expect(jpeg.exportable.every((entry) => entry.plan.mimeType === 'image/jpeg')).toBe(true);
+    expect(jpeg.exportable[0].plan.quality).toBe(DEFAULT_QUALITY);
+
+    const png = buildBatchPlan({
+      items,
+      config: CONFIG,
+      sizeId: '8k',
+      formatId: 'png',
+      quality: 0.7,
+    });
+    expect(png.exportable.map((entry) => entry.filename)).toEqual([
+      'Passe_one_2000px.png',
+      'Passe_two_2000px.png',
+    ]);
+    expect(png.exportable.every((entry) => entry.plan.mimeType === 'image/png')).toBe(true);
+    // PNG 下质量被解析成 undefined —— 与单张同一条规则，不是各写一份
+    expect(png.exportable[0].plan.quality).toBeUndefined();
+  });
+
+  it('JPEG 的质量同样整批透传下去', () => {
+    const items = [item('a', 'one.tif', 2000, 1500), item('b', 'two.tif', 2000, 1500)];
+    const plan = buildBatchPlan({ items, config: CONFIG, sizeId: '8k', quality: 0.72 });
+
+    expect(plan.exportable.map((entry) => entry.plan.quality)).toEqual([0.72, 0.72]);
   });
 });
 

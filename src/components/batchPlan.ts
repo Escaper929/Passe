@@ -81,6 +81,14 @@ export interface BuildBatchPlanInput<T extends BatchCandidate> {
   sizeId: string;
   /** 直接指定源图长边上限，优先于 sizeId */
   overrideMaxDimension?: number | null;
+  /**
+   * 导出格式与质量。
+   *
+   * 必须由这里透传到 `buildExportPlan`，而不是让批量与单张各认一份状态：
+   * 两处口径一旦分叉，用户会拿到"面板上写着 .png、批量导出来却是 .jpg"的批次。
+   */
+  formatId?: string;
+  quality?: number;
   cameraModel?: string;
   /** 画布像素上限，可注入 */
   limit?: number;
@@ -197,6 +205,8 @@ export function buildBatchPlan<T extends BatchCandidate>(
       config,
       sizeId,
       overrideMaxDimension: override,
+      formatId: input.formatId,
+      quality: input.quality,
       cameraModel: input.cameraModel,
       sourceName: item.name,
       limit,

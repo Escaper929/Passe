@@ -10,6 +10,7 @@ import { installCanvasHarness } from '@/test/canvasHarness';
 import { waitFor } from '@/test/waitFor';
 
 import { FramingStudio, PREVIEW_INSET } from './FramingStudio';
+import { DEFAULT_QUALITY, EXPORT_FORMATS, type ExportFormatId } from './exportFormat';
 import { PRESET_STORAGE_KEY } from './presets';
 
 /**
@@ -440,6 +441,181 @@ describe('调校台 · 导出路径', () => {
 
     // 面板上写的是什么，导出的就必须是什么 —— 这是用户唯一能核对的地方
     expect(downloads[0]).toBe(shown);
+  });
+});
+
+/**
+ * 调校台 · 导出格式与质量（数字输出）。
+ *
+ * 断言分两层，缺一层都不算钉住：
+ * 1. **界面上**：选 PNG 之后质量滑杆必须消失 —— `toBlob` 会静默忽略 PNG 的
+ *    质量参数，留一个拖了没反应的控件会让用户以为"调到 90% 文件就小了"。
+ * 2. **到编码器**：真正交给 `toBlob` 的 MIME 与质量，必须就是面板上那一个。
+ *    只断言下载文件名是不够的 —— 文件名说 .png、编码却编成 JPEG 也照样"过"。
+ */
+describe('调校台 · 导出格式与质量', () => {
+  /**
+   * 按 `title` 精确找按钮。
+   *
+   * 格式按钮的标签只有 "JPEG" / "PNG" 四个字符，用 `findButton` 的文字包含匹配
+   * 迟早会撞上别处的文案；而 `ChoiceGrid` 恰好把说明挂在 `title` 上。
+   * 这里直接从 `EXPORT_FORMATS` 取说明，于是**改文案不会弄坏测试**，精确性也保住了。
+   */
+  function formatButton(id: ExportFormatId): HTMLButtonElement {
+    const format = EXPORT_FORMATS.find((entry) => entry.id === id);
+    if (!format) throw new Error(`没有这个格式：${id}`);
+    const match = container?.querySelector<HTMLButtonElement>(`button[title="${format.hint}"]`);
+    if (!match) throw new Error(`找不到格式按钮：${id}`);
+    return match;
+  }
+
+  /**
+   * 质量滑杆。
+   *
+   * 面板里有十几个 range（边距、纹理、钢印…），只能按它所在 label 的名字定位。
+   * `Slider` 的结构是 `label > span > span` 为名字，所以取第一个嵌套 span。
+   */
+  function qualitySlider(): HTMLInputElement | null {
+    for (const label of Array.from(container?.querySelectorAll('label') ?? [])) {
+      if (label.querySelector('span > span')?.textContent?.trim() !== '质量') continue;
+      const input = label.querySelector<HTMLInputElement>('input[type="range"]');
+      if (input) return input;
+    }
+    return null;
+  }
+
+  /**
+   * 拖动滑杆。
+   *
+   * 受控 input 不能直接赋 `.value` —— React 在元素实例上装了 value 的 setter，
+   * 直接赋值会被它记成"没变过"，onChange 根本不触发。必须绕到原型上的原生
+   * setter，再派发 input 事件。
+   */
+  async function dragQuality(value: number): Promise<void> {
+    const input = qualitySlider();
+    if (!input) throw new Error('找不到质量滑杆');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (!setter) throw new Error('拿不到 value 的原生 setter');
+    await act(async () => {
+      setter.call(input, String(value));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  /** 最近一次编码实际用的 MIME 与质量。canvasHarness 已把 toBlob 换成了 spy。 */
+  function lastEncoding(): { type: string | undefined; quality: number | undefined } {
+    const calls = vi.mocked(HTMLCanvasElement.prototype.toBlob).mock.calls;
+    if (calls.length === 0) throw new Error('没有发生任何画布编码');
+    const last = calls[calls.length - 1];
+    return { type: last[1], quality: last[2] };
+  }
+
+  beforeEach(() => {
+    // 同文件里多个用例共用这一个 spy，不清就会读到上一条的调用
+    vi.mocked(HTMLCanvasElement.prototype.toBlob).mockClear();
+  });
+
+  it('默认 JPEG：滑杆在，文件名 .jpg，编码器拿到 image/jpeg', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+
+    expect(formatButton('jpeg').className).toContain('border-white');
+    expect(qualitySlider()).not.toBeNull();
+    expect(shownFilename().endsWith('.jpg')).toBe(true);
+
+    await act(async () => {
+      exportButton().click();
+    });
+    await waitForExportDone();
+
+    expect(downloads[0]).toBe(shownFilename());
+    expect(lastEncoding()).toEqual({ type: 'image/jpeg', quality: DEFAULT_QUALITY });
+  });
+
+  it('选 PNG：文件名变 .png、质量滑杆消失、编码走无损', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+
+    await act(async () => {
+      formatButton('png').click();
+    });
+
+    expect(shownFilename().endsWith('.png')).toBe(true);
+    // 拖了没反应的控件比不摆更糟，所以这里断言的是"它不存在"
+    expect(qualitySlider()).toBeNull();
+
+    await act(async () => {
+      exportButton().click();
+    });
+    await waitForExportDone();
+
+    expect(downloads[0].endsWith('.png')).toBe(true);
+    expect(downloads[0]).toBe(shownFilename());
+    /*
+     * 这里只断言 MIME，不断言质量。
+     *
+     * PNG 确实拿到了一个质量数字（0.98），但它来自**引擎自己的默认值**：
+     * 那边写的是 `const { quality = 0.98 } = exportOpts`，而解构默认值连显式
+     * 传入的 undefined 也会补上。规范规定 PNG 忽略这个参数，所以画面不受影响。
+     * 把它钉在这里只会变成一条"改动引擎默认值就红"的噪音 ——
+     * "无损格式没有质量"这条契约的观察点在 `ExportPlan.quality`，
+     * 由 exportPlan.test.ts 断言。
+     */
+    expect(lastEncoding().type).toBe('image/png');
+  });
+
+  it('拖质量滑杆，传给编码器的就是那个值', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+
+    await dragQuality(0.72);
+    expect(text()).toContain('72%');
+
+    await act(async () => {
+      exportButton().click();
+    });
+    await waitForExportDone();
+
+    expect(lastEncoding().quality).toBe(0.72);
+    // 质量不影响文件名与尺寸，面板上写的名字仍然要能对上
+    expect(downloads[0]).toBe(shownFilename());
+  });
+
+  it('PNG 来回切一次，之前调好的质量还在', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+
+    await dragQuality(0.72);
+
+    await act(async () => {
+      formatButton('png').click();
+    });
+    expect(qualitySlider()).toBeNull();
+
+    await act(async () => {
+      formatButton('jpeg').click();
+    });
+    // 切格式不该顺手丢掉用户的设置 —— PNG 下没有质量可调，重置等于凭空扣一次
+    expect(text()).toContain('72%');
+  });
+
+  it('批量导出也跟着格式走，整批一起变 .png', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImages(latestQueue!, 2);
+
+    await act(async () => {
+      formatButton('png').click();
+    });
+
+    await act(async () => {
+      batchButton().click();
+    });
+    await waitForBatchSettled(2);
+
+    expect(downloads).toHaveLength(2);
+    // 面板写着 PNG、点"导出全部"却拿到一批 .jpg —— 这是最尴尬的一种不一致
+    expect(downloads.every((name) => name.endsWith('.png'))).toBe(true);
+    expect(new Set(downloads).size).toBe(2);
   });
 });
 

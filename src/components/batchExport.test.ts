@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { RenderSource } from '@/engine/types';
 
-import { runBatchExport, type BatchJob, type BatchProgress } from './batchExport';
+import {
+  runBatchExport,
+  type BatchJob,
+  type BatchProgress,
+  type BatchRenderSpec,
+} from './batchExport';
 import type { ExportSink, SinkStart } from './exportSink';
 
 /**
@@ -16,13 +21,22 @@ import type { ExportSink, SinkStart } from './exportSink';
  * 四个 IO 动作全部注入，所以这里不需要浏览器、不需要画布，跑得飞快。
  */
 
-function job(id: string, name = `${id}.tif`, filename = `Passe_${id}_2000px.jpg`): BatchJob {
+function job(
+  id: string,
+  name = `${id}.tif`,
+  filename = `Passe_${id}_2000px.jpg`,
+  encoding: { mimeType: BatchJob['mimeType']; quality: number | null } = {
+    mimeType: 'image/jpeg',
+    quality: 0.98,
+  },
+): BatchJob {
   return {
     id,
     name,
     file: new File(['x'], name, { type: 'image/tiff' }),
     filename,
     maxDimension: 8192,
+    ...encoding,
   };
 }
 
@@ -38,6 +52,8 @@ interface Harness {
   ended: number;
   /** 收尾是否发生在所有写入之后 */
   eventsAtEnd: string[];
+  /** 每次渲染收到的编码规格，用来验证它确实是**随任务**传下来的 */
+  specs: { name: string; spec: BatchRenderSpec }[];
 }
 
 function makeHarness(options: {
@@ -61,6 +77,7 @@ function makeHarness(options: {
     begun: 0,
     ended: 0,
     eventsAtEnd: [],
+    specs: [],
   };
 
   const named = (source: RenderSource): string => (source as unknown as { name: string }).name;
@@ -91,9 +108,10 @@ function makeHarness(options: {
       harness.events.push(`open:${file.name}`);
       return { name: file.name } as unknown as RenderSource;
     },
-    async render(source: RenderSource): Promise<Blob> {
+    async render(source: RenderSource, spec: BatchRenderSpec): Promise<Blob> {
       if (options.failRender === named(source)) throw new Error(`${named(source)} 渲染失败`);
       harness.events.push(`render:${named(source)}`);
+      harness.specs.push({ name: named(source), spec });
       return new Blob(['rendered']);
     },
     dispose(source: RenderSource): void {
@@ -201,6 +219,28 @@ describe('runBatchExport · 正常路径', () => {
     const outcome = await runBatchExport([job('a')], deps);
 
     expect(outcome.exported[0].filename).toBe('Passe_a_2000px-3.jpg');
+  });
+
+  /**
+   * 编码参数必须**随任务**走，而不是在渲染那一刻读"当前界面上的设置"。
+   *
+   * 串行跑一批要好几十秒，期间用户完全可能改了格式；若渲染闭包去读界面状态，
+   * 后面几张就会用新格式编码，而文件名还挂着旧扩展名 —— 用户拿到一堆
+   * 名不副实的文件。这里直接给两张不同的规格，验证各张拿到的就是自己那份。
+   */
+  it('每张拿到的编码规格是它自己的那一份，不是统一读来的', async () => {
+    const jobs = [
+      job('a'),
+      job('b', 'b.tif', 'Passe_b_2000px.png', { mimeType: 'image/png', quality: null }),
+    ];
+    const { harness, deps } = makeHarness({});
+
+    await runBatchExport(jobs, deps);
+
+    expect(harness.specs).toEqual([
+      { name: 'a.tif', spec: { maxDimension: 8192, mimeType: 'image/jpeg', quality: 0.98 } },
+      { name: 'b.tif', spec: { maxDimension: 8192, mimeType: 'image/png', quality: undefined } },
+    ]);
   });
 });
 

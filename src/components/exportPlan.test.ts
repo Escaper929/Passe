@@ -9,6 +9,7 @@ import {
   sanitizeSegment,
   stripExtension,
 } from './exportPlan';
+import { DEFAULT_QUALITY, QUALITY_MAX, QUALITY_MIN } from './exportFormat';
 
 const SOURCE = { width: 9000, height: 6000 };
 
@@ -55,6 +56,80 @@ describe('导出方案 · 文件名', () => {
     });
     expect(dirty).not.toContain('/');
     expect(dirty).not.toContain('\\');
+  });
+});
+
+/**
+ * 导出方案 · 格式与质量。
+ *
+ * 名字里的扩展名与真正交给编码器的 MIME 是同一个 plan 算出来的，
+ * 所以这里要盯的是"两者永远一致"—— 用户唯一能核对的就是文件名。
+ */
+describe('导出方案 · 格式与质量', () => {
+  it('默认走 JPEG：文件名 .jpg、MIME image/jpeg、质量取默认值', () => {
+    const plan = buildExportPlan({ source: SOURCE, config: {}, sizeId: '2k' });
+
+    expect(plan.formatId).toBe('jpeg');
+    expect(plan.mimeType).toBe('image/jpeg');
+    expect(plan.quality).toBe(DEFAULT_QUALITY);
+    expect(plan.filename).toBe('Passe_2048px.jpg');
+    expect(plan.filename).toBe(buildExportFilename({ longSide: 2048, extension: '.jpg' }));
+  });
+
+  it('选 PNG 时扩展名与 MIME 一起换成无损那套，质量变为 undefined', () => {
+    const plan = buildExportPlan({
+      source: SOURCE,
+      config: {},
+      sizeId: '2k',
+      formatId: 'png',
+    });
+
+    expect(plan.formatId).toBe('png');
+    expect(plan.mimeType).toBe('image/png');
+    // PNG 没有质量这一说：传 undefined 而不是继续传 0.98
+    expect(plan.quality).toBeUndefined();
+    expect(plan.filename).toBe('Passe_2048px.png');
+  });
+
+  it('扩展名跟着格式走，而不是两处各写一份', () => {
+    // 文件名与 MIME 必须来自同一次解析，否则会出现"写着 .png 却编成 JPEG"
+    for (const formatId of ['jpeg', 'png']) {
+      const plan = buildExportPlan({ source: SOURCE, config: {}, sizeId: '2k', formatId });
+      expect(plan.filename).toBe(
+        buildExportFilename({
+          longSide: plan.outputLongSide,
+          extension: `.${formatId === 'jpeg' ? 'jpg' : 'png'}`,
+        }),
+      );
+      expect(plan.mimeType).toBe(formatId === 'jpeg' ? 'image/jpeg' : 'image/png');
+    }
+  });
+
+  it('未知格式 id 退回 JPEG，不抛错也不写出没有扩展名的文件', () => {
+    // 预设存的是历史 id、或将来删掉的格式，都不该让导出面板整个炸掉
+    const plan = buildExportPlan({ source: SOURCE, config: {}, sizeId: '2k', formatId: 'webp' });
+
+    expect(plan.formatId).toBe('jpeg');
+    expect(plan.filename.endsWith('.jpg')).toBe(true);
+  });
+
+  it('质量越界在方案这一层就被夹住', () => {
+    const low = buildExportPlan({ source: SOURCE, config: {}, sizeId: '2k', quality: 0.1 });
+    const high = buildExportPlan({ source: SOURCE, config: {}, sizeId: '2k', quality: 2 });
+
+    expect(low.quality).toBe(QUALITY_MIN);
+    expect(high.quality).toBe(QUALITY_MAX);
+  });
+
+  it('质量只影响 quality，不碰尺寸与文件名', () => {
+    const base = buildExportPlan({ source: SOURCE, config: {}, sizeId: '4k' });
+    const low = buildExportPlan({ source: SOURCE, config: {}, sizeId: '4k', quality: 0.7 });
+
+    expect(low.quality).toBe(0.7);
+    expect(low.outputW).toBe(base.outputW);
+    expect(low.outputH).toBe(base.outputH);
+    expect(low.framedW).toBe(base.framedW);
+    expect(low.filename).toBe(base.filename);
   });
 });
 

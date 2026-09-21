@@ -40,6 +40,17 @@ import {
   type BatchOutcome,
   type BatchProgress,
 } from './batchExport';
+import {
+  DEFAULT_EXPORT_FORMAT_ID,
+  DEFAULT_QUALITY,
+  EXPORT_FORMATS,
+  QUALITY_MAX,
+  QUALITY_MIN,
+  QUALITY_STEP,
+  describeQuality,
+  resolveExportFormat,
+  type ExportFormatId,
+} from './exportFormat';
 import { buildExportPlan, DEFAULT_EXPORT_SIZE_ID, EXPORT_SIZES } from './exportPlan';
 import { createExportSink } from './exportSink';
 import { previewBacking } from './previewBacking';
@@ -111,6 +122,15 @@ export interface FramingStudioProps {
 export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioProps) {
   const [config, setConfig] = useState<FrameConfig>(INITIAL_CONFIG);
   const [sizeId, setSizeId] = useState(DEFAULT_EXPORT_SIZE_ID);
+  /**
+   * 导出格式与 JPEG 质量。
+   *
+   * 质量单独存一份（而不是塞进格式里）：切到 PNG 再切回来时，用户之前选的质量
+   * 应当还在，而不是被重置成默认值 —— 那是同一个"别抹掉用户输入"的原则。
+   * 切换格式**不**重置质量，是因为 PNG 下没有质量可调，重置等于凭空丢一次设置。
+   */
+  const [formatId, setFormatId] = useState<ExportFormatId>(DEFAULT_EXPORT_FORMAT_ID);
+  const [jpegQuality, setJpegQuality] = useState(DEFAULT_QUALITY);
   /** 守卫的建议值或用户手动指定，优先于 sizeId */
   const [overrideMaxDimension, setOverrideMaxDimension] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -148,6 +168,12 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
   const activeItem = queue.active;
   const activeFile = activeItem?.file ?? null;
   const source: RenderSource | null = activeItem?.status === 'ready' ? activeItem.source : null;
+  /**
+   * 界面用的格式对象，只用来判断"要不要给质量控件"和取文案。
+   * 真正的编码参数取自 `plan`（`mimeType` / `quality`）—— 那里与文件名同源。
+   * 两者都由 `resolveExportFormat` 解析，不存在第三处口径。
+   */
+  const exportFormat = resolveExportFormat(formatId);
 
   useEffect(() => {
     const fonts = document.fonts;
@@ -263,11 +289,13 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       config,
       sizeId,
       overrideMaxDimension,
+      formatId,
+      quality: jpegQuality,
       cameraModel: config.cameraModel,
       sourceName: activeItem.name,
       limit: renderLimit,
     });
-  }, [activeItem, config, sizeId, overrideMaxDimension, renderLimit]);
+  }, [activeItem, config, sizeId, overrideMaxDimension, formatId, jpegQuality, renderLimit]);
 
   const chooseSize = useCallback((next: string) => {
     setSizeId(next);
@@ -291,10 +319,12 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       config,
       sizeId,
       overrideMaxDimension,
+      formatId,
+      quality: jpegQuality,
       cameraModel: config.cameraModel,
       limit: renderLimit,
     });
-  }, [queue.items, config, sizeId, overrideMaxDimension, renderLimit]);
+  }, [queue.items, config, sizeId, overrideMaxDimension, formatId, jpegQuality, renderLimit]);
 
   const presets = useMemo(() => allPresets(userPresets), [userPresets]);
 
@@ -355,13 +385,17 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       fullResolution = activeFile ? await reopenFullResolution(activeFile) : source;
 
       const blob = await GalleryFramingEngine.exportBlob(fullResolution, config, {
-        format: 'image/jpeg',
-        quality: 0.98,
+        // 编码参数取自 plan，而不是组件 state —— 面板上展示的文件名就是同一个
+        // plan 算出来的，两者同源才不会出现"写着 .png、导出却是个 .jpg"
+        format: plan.mimeType,
+        quality: plan.quality,
         maxDimension: plan.maxDimension ?? undefined,
       });
 
       saveBlob(blob, plan.filename);
-      setExportNote(`已导出 ${plan.filename} · 成品 ${plan.framedW} × ${plan.framedH}`);
+      setExportNote(
+        `已导出 ${plan.filename} · 成品 ${plan.framedW} × ${plan.framedH} · ${formatMemory(blob.size)}`,
+      );
     } catch (error) {
       setExportNote(error instanceof Error ? error.message : String(error));
     } finally {
@@ -380,6 +414,9 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       file: entry.item.file,
       filename: entry.filename,
       maxDimension: entry.plan.maxDimension,
+      // 编码参数与文件名同源：都来自这一张自己的 plan
+      mimeType: entry.plan.mimeType,
+      quality: entry.plan.quality ?? null,
     }));
 
     cancelBatchRef.current = false;
@@ -394,11 +431,11 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       const outcome = await runBatchExport(jobs, {
         sink: createExportSink(),
         reopen: reopenFullResolution,
-        render: (source, options) =>
+        render: (source, spec) =>
           GalleryFramingEngine.exportBlob(source, config, {
-            format: 'image/jpeg',
-            quality: 0.98,
-            maxDimension: options.maxDimension,
+            format: spec.mimeType,
+            quality: spec.quality,
+            maxDimension: spec.maxDimension,
           }),
         dispose: disposeSource,
         onProgress: setBatchProgress,
@@ -747,6 +784,35 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
               hint: option.hint,
             }))}
           />
+
+          {/* 格式是数字输出的另一个独立轴：它不改变画面，只改变编码方式 */}
+          <p className="mt-3 mb-1 text-[10px] tracking-wider text-[#666] uppercase">格式</p>
+          <ChoiceGrid
+            columns={2}
+            value={formatId}
+            onChange={setFormatId}
+            options={EXPORT_FORMATS.map((format) => ({
+              value: format.id,
+              label: format.label,
+              hint: format.hint,
+            }))}
+          />
+
+          {/* PNG 下整块不渲染：`toBlob` 会静默忽略质量参数，留一个拖了没反应的
+              滑杆比不留更糟 —— 用户会以为"拖到 90% 文件就小了"（见 exportFormat.ts） */}
+          {exportFormat.lossy ? (
+            <div className="mt-2">
+              <Slider
+                label="质量"
+                value={jpegQuality}
+                min={QUALITY_MIN}
+                max={QUALITY_MAX}
+                step={QUALITY_STEP}
+                display={describeQuality(jpegQuality)}
+                onChange={setJpegQuality}
+              />
+            </div>
+          ) : null}
 
           {plan ? (
             <dl className="mt-3 space-y-1 text-[10px] text-[#666]">

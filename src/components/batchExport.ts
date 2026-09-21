@@ -17,6 +17,7 @@
 
 import type { RenderSource } from '@/engine/types';
 
+import type { ExportMimeType } from './exportFormat';
 import type { ExportSink, SinkStart } from './exportSink';
 
 export interface BatchJob {
@@ -28,6 +29,16 @@ export interface BatchJob {
   filename: string;
   /** 传给引擎的长边上限；null 表示不降采样 */
   maxDimension: number | null;
+  /**
+   * 编码 MIME 与质量，**随任务一起走**。
+   *
+   * 不放在 `render` 的闭包里读界面状态：文件名（含扩展名）是随任务一起定下的，
+   * 编码参数若另从一处读，两者就有了各自变化的可能。放在同一个对象里，
+   * "文件名说 .png 而实际编出 .jpg"在结构上就不可能发生。
+   */
+  mimeType: ExportMimeType;
+  /** 无损格式为 null（该格式没有质量这一说） */
+  quality: number | null;
 }
 
 export interface BatchProgress {
@@ -67,13 +78,26 @@ export interface BatchOutcome {
 export interface BatchExportDeps {
   /** 按需重解全分辨率原图 */
   reopen: (file: File) => Promise<RenderSource>;
-  render: (source: RenderSource, options: { maxDimension?: number }) => Promise<Blob>;
+  /**
+   * 渲染并编码。
+   *
+   * 第二个参数是**这一张自己的**编码规格，不是"当前界面上的设置" ——
+   * 队列里每张的方案是各自算出来的，串行跑的时候界面早就可能被改过了。
+   */
+  render: (source: RenderSource, spec: BatchRenderSpec) => Promise<Blob>;
   /** 释放重解出来的那张。**失败路径也必须走到** */
   dispose: (source: RenderSource) => void;
   sink: ExportSink;
   onProgress?: (progress: BatchProgress) => void;
   /** 每张开始前问一次是否已被打断 */
   shouldCancel?: () => boolean;
+}
+
+/** 渲染一张所需的全部编码参数，与 `BatchJob` 同源。 */
+export interface BatchRenderSpec {
+  maxDimension?: number;
+  mimeType: ExportMimeType;
+  quality?: number;
 }
 
 export async function runBatchExport(
@@ -124,7 +148,11 @@ export async function runBatchExport(
       try {
         // 原图不常驻内存，这一张到这一刻才重解。一次只解一张，用完必须释放。
         source = await reopen(job.file);
-        const blob = await render(source, { maxDimension: job.maxDimension ?? undefined });
+        const blob = await render(source, {
+          maxDimension: job.maxDimension ?? undefined,
+          mimeType: job.mimeType,
+          quality: job.quality ?? undefined,
+        });
         const actualName = await sink.write(blob, job.filename);
         outcome.exported.push({ id: job.id, name: job.name, filename: actualName });
       } catch (error) {

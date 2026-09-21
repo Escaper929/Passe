@@ -9,6 +9,14 @@
 import type { FrameConfig } from '@/engine/types';
 import { assessFrame, suggestMaxDimension, type RenderBudget } from '@/input/budget';
 
+import {
+  DEFAULT_EXPORT_FORMAT_ID,
+  DEFAULT_QUALITY,
+  resolveExportFormat,
+  resolveQuality,
+  type ExportMimeType,
+} from './exportFormat';
+
 export interface ExportSizeOption {
   id: string;
   label: string;
@@ -93,6 +101,17 @@ export interface ExportPlan {
    * 点完修正之后不该还留着一条黄色警告。
    */
   suggestedMaxDimension: number | null;
+  /** 实际生效的格式档 id */
+  formatId: string;
+  /**
+   * 传给编码器的 MIME。
+   *
+   * 文件名扩展名**由它推导**而不是各写一份 —— 面板展示的名字与实际写盘的名字
+   * 必须逐字相同，这是用户唯一能核对的线索。
+   */
+  mimeType: ExportMimeType;
+  /** 传给编码器的质量；无损格式为 undefined（该格式没有质量这一说） */
+  quality: number | undefined;
   filename: string;
 }
 
@@ -105,6 +124,10 @@ export interface BuildExportPlanInput {
    * 守卫拦下导出后用建议值一键修复，走的就是这条路。
    */
   overrideMaxDimension?: number | null;
+  /** `EXPORT_FORMATS` 里的 id。取不到就退回默认格式 */
+  formatId?: string;
+  /** 质量。仅对无损以外的格式有意义 */
+  quality?: number;
   /** 相机机型，进文件名 */
   cameraModel?: string;
   /** 原始文件名，进文件名 */
@@ -119,6 +142,9 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
   const override = input.overrideMaxDimension ?? null;
   const preset = EXPORT_SIZES.find((option) => option.id === sizeId) ?? EXPORT_SIZES[0];
   const requested = override ?? preset.maxDimension;
+
+  const format = resolveExportFormat(input.formatId ?? DEFAULT_EXPORT_FORMAT_ID);
+  const quality = resolveQuality(format, input.quality ?? DEFAULT_QUALITY);
 
   const sourceLongSide = Math.max(source.width, source.height);
   // 只降不升：没有哪种重采样能凭空造出细节
@@ -145,10 +171,14 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
     suggestedMaxDimension: canExport
       ? null
       : suggestMaxDimension(source.width, source.height, config, limit),
+    formatId: format.id,
+    mimeType: format.mimeType,
+    quality,
     filename: buildExportFilename({
       cameraModel: input.cameraModel,
       sourceName: input.sourceName,
       longSide: outputLongSide,
+      extension: format.extension,
     }),
   };
 }
