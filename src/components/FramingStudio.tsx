@@ -45,14 +45,6 @@ import { createExportSink } from './exportSink';
 import { previewBacking } from './previewBacking';
 import { fitPreview } from './previewFit';
 import {
-  DEFAULT_TARGET_DPI,
-  DPI_OPTIONS,
-  PRINT_SIZES,
-  describeDpi,
-  describePrint,
-  findPrintSize,
-} from './printSize';
-import {
   allPresets,
   applyPreset,
   createUserPreset,
@@ -119,8 +111,6 @@ export interface FramingStudioProps {
 export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioProps) {
   const [config, setConfig] = useState<FrameConfig>(INITIAL_CONFIG);
   const [sizeId, setSizeId] = useState(DEFAULT_EXPORT_SIZE_ID);
-  /** 目标打印 DPI。只对纸规格档有意义，切回像素档时保留用户上次的选择 */
-  const [targetDpi, setTargetDpi] = useState(DEFAULT_TARGET_DPI);
   /** 守卫的建议值或用户手动指定，优先于 sizeId */
   const [overrideMaxDimension, setOverrideMaxDimension] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -273,12 +263,11 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       config,
       sizeId,
       overrideMaxDimension,
-      targetDpi,
       cameraModel: config.cameraModel,
       sourceName: activeItem.name,
       limit: renderLimit,
     });
-  }, [activeItem, config, sizeId, overrideMaxDimension, targetDpi, renderLimit]);
+  }, [activeItem, config, sizeId, overrideMaxDimension, renderLimit]);
 
   const chooseSize = useCallback((next: string) => {
     setSizeId(next);
@@ -302,11 +291,10 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       config,
       sizeId,
       overrideMaxDimension,
-      targetDpi,
       cameraModel: config.cameraModel,
       limit: renderLimit,
     });
-  }, [queue.items, config, sizeId, overrideMaxDimension, targetDpi, renderLimit]);
+  }, [queue.items, config, sizeId, overrideMaxDimension, renderLimit]);
 
   const presets = useMemo(() => allPresets(userPresets), [userPresets]);
 
@@ -753,43 +741,12 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
             columns={4}
             value={sizeId}
             onChange={chooseSize}
-            options={[
-              ...EXPORT_SIZES.map((option) => ({
-                value: option.id,
-                label: option.label,
-                hint: option.hint,
-              })),
-              ...PRINT_SIZES.map((paper) => ({
-                value: paper.id,
-                label: paper.label,
-                hint: `${paper.hint}（按目标 DPI 反推）`,
-              })),
-            ]}
+            options={EXPORT_SIZES.map((option) => ({
+              value: option.id,
+              label: option.label,
+              hint: option.hint,
+            }))}
           />
-
-          {/* DPI 只在选了纸之后才有意义 —— 像素档谈 DPI 是无从谈起的 */}
-          {findPrintSize(sizeId) ? (
-            <div className="mt-2">
-              <ChoiceGrid
-                columns={3}
-                value={targetDpi}
-                onChange={setTargetDpi}
-                options={DPI_OPTIONS.map((option) => ({
-                  value: option.value,
-                  label: option.label,
-                  hint: option.hint,
-                }))}
-              />
-            </div>
-          ) : null}
-
-          {plan?.print ? (
-            <p className="mt-2 rounded border border-[#262628] bg-[#1C1C1E] px-2.5 py-2 text-[10px] leading-relaxed text-[#888]">
-              {describePrint(plan.print)}
-              <br />
-              <span className="text-[#AAA]">{describeDpi(plan.print)}</span>
-            </p>
-          ) : null}
 
           {plan ? (
             <dl className="mt-3 space-y-1 text-[10px] text-[#666]">
@@ -846,11 +803,7 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
               onClick={() => setOverrideMaxDimension(null)}
               className="mt-2 w-full rounded border border-[#333] px-3 py-2 text-[11px] text-[#888] transition-colors hover:border-[#555] hover:text-white"
             >
-              取消尺寸修正，回到「
-              {EXPORT_SIZES.find((o) => o.id === sizeId)?.label ??
-                findPrintSize(sizeId)?.label ??
-                sizeId}
-              」
+              取消尺寸修正，回到「{EXPORT_SIZES.find((o) => o.id === sizeId)?.label ?? sizeId}」
             </button>
           ) : null}
 

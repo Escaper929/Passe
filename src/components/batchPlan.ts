@@ -81,13 +81,6 @@ export interface BuildBatchPlanInput<T extends BatchCandidate> {
   sizeId: string;
   /** 直接指定源图长边上限，优先于 sizeId */
   overrideMaxDimension?: number | null;
-  /**
-   * 目标打印 DPI，仅当 sizeId 是纸规格时有意义。
-   *
-   * 必须一路传下去：单张面板与整批方案是两次独立调用，漏传会让同一次导出
-   * 在面板里显示 300DPI、在批量汇总里按默认值算，数字对不上。
-   */
-  targetDpi?: number;
   cameraModel?: string;
   /** 画布像素上限，可注入 */
   limit?: number;
@@ -204,7 +197,6 @@ export function buildBatchPlan<T extends BatchCandidate>(
       config,
       sizeId,
       overrideMaxDimension: override,
-      targetDpi: input.targetDpi,
       cameraModel: input.cameraModel,
       sourceName: item.name,
       limit,
