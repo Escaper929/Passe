@@ -471,9 +471,10 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
         <header className="flex items-center justify-between border-b border-studio-line px-6 py-3">
           <div>
             <p className="text-[10px] tracking-[0.3em] text-[#777] uppercase">Passe · 衬境</p>
-            {/* 阶段标记只挂在入口界面上，用来一眼确认线上跑的是哪一版；
-                v1.0 定稿时换成版本号 */}
-            <h1 className="text-sm font-medium text-white">画廊装裱调校台 · 阶段 4</h1>
+            {/* 版本标记挂在入口界面上，用来一眼确认线上跑的是哪一版。
+                值来自 package.json（见 vite.config.ts 的 define）——
+                硬编码的标记一定会漂移，这里不留第二处可改的地方。 */}
+            <h1 className="text-sm font-medium text-white">画廊装裱调校台 · v{__APP_VERSION__}</h1>
           </div>
           <div className="flex items-center gap-3 text-[11px] text-[#666]">
             {activeItem && activeItem.status === 'ready' ? (

@@ -287,6 +287,24 @@ describe('调校台 · 空态', () => {
     expect(text()).not.toContain('装裱外框');
   });
 
+  /**
+   * 顶栏的版本标记。
+   *
+   * 它存在的唯一目的是"一眼看出线上跑的是哪一版"，所以两件事都不能错：
+   * 值必须来自注入（与 package.json 同源），且不能再出现写死的阶段编号 ——
+   * 上一版就挂着"阶段 4"，而阶段 5 与 v1.2 都上线了它还没变。
+   *
+   * 说明一句：这条断言能挡住"又把标记写死回去"，但挡不住"写死的值恰好等于
+   * 版本号"。单源性靠的是 vite.config.ts 里那处 define，不是这条测试。
+   */
+  it('顶栏挂的是注入的版本号，不是写死的阶段编号', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+
+    expect(__APP_VERSION__).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(text()).toContain(`画廊装裱调校台 · v${__APP_VERSION__}`);
+    expect(text()).not.toContain('阶段');
+  });
+
   it('素材就绪后显示原图分辨率与导出规格', async () => {
     await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
     await seedImage(latestQueue!, 'portra400.tif');
