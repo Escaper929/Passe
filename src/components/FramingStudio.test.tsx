@@ -12,6 +12,7 @@ import { waitFor } from '@/test/waitFor';
 import { FramingStudio, PREVIEW_INSET } from './FramingStudio';
 import { ASPECT_OPTIONS } from './aspects';
 import { DEFAULT_QUALITY, EXPORT_FORMATS, type ExportFormatId } from './exportFormat';
+import { useFramingSettings } from './framingSettings';
 import { PRESET_STORAGE_KEY } from './presets';
 
 /**
@@ -41,10 +42,12 @@ function Harness({
   renderLimit?: number;
 }) {
   const queue = useImageQueue();
+  // 装裱设置住在 App（framingSettings.ts），测试里由这个薄壳替 App 提供同一份
+  const settings = useFramingSettings();
   useEffect(() => {
     onQueue(queue);
   });
-  return <FramingStudio queue={queue} renderLimit={renderLimit} />;
+  return <FramingStudio queue={queue} settings={settings} renderLimit={renderLimit} />;
 }
 
 /** 记录每次解码分配的位图，用于断言"该释放的有没有释放"。 */
@@ -268,6 +271,67 @@ async function seedImages(queue: ImageQueueApi, count: number): Promise<void> {
 
 function file(name = 'portra400.tif', type = 'image/tiff'): File {
   return new File(['x'], name, { type });
+}
+
+/**
+ * 按 Slider 的名字定位它的 range。
+ *
+ * 面板里有十几个 range（边距、纹理、钢印…），只能按它所在 label 的名字定位。
+ * `Slider` 的结构是 `label > span > span` 为名字，所以取第一个嵌套 span。
+ */
+function sliderByLabel(label: string): HTMLInputElement | null {
+  for (const node of Array.from(container?.querySelectorAll('label') ?? [])) {
+    if (node.querySelector('span > span')?.textContent?.trim() !== label) continue;
+    const input = node.querySelector<HTMLInputElement>('input[type="range"]');
+    if (input) return input;
+  }
+  return null;
+}
+
+/** 读某个 Slider 右上角的读数（名字右边那个 span），用来断言值真的变了。 */
+function sliderReadout(label: string): string {
+  for (const node of Array.from(container?.querySelectorAll('label') ?? [])) {
+    if (node.querySelector('span > span')?.textContent?.trim() !== label) continue;
+    const spans = node.querySelectorAll('span > span');
+    const readout = spans[spans.length - 1]?.textContent?.trim();
+    if (readout) return readout;
+  }
+  throw new Error(`读不到滑杆读数：${label}`);
+}
+
+/**
+ * 拖动滑杆。
+ *
+ * 受控 input 不能直接赋 `.value` —— React 在元素实例上装了 value 的 setter，
+ * 直接赋值会被它记成"没变过"，onChange 根本不触发。必须绕到原型上的原生
+ * setter，再派发 input 事件。
+ */
+async function dragSlider(label: string, value: number): Promise<void> {
+  const input = sliderByLabel(label);
+  if (!input) throw new Error(`找不到滑杆：${label}`);
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (!setter) throw new Error('拿不到 value 的原生 setter');
+  await act(async () => {
+    setter.call(input, String(value));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/**
+ * 通过全局粘贴入口送一张图进队列。
+ *
+ * 走粘贴而不是 App 内部的 hook 实例：这条路径不依赖任何组件内部结构，
+ * 与用户真实的入口一致。
+ */
+async function pasteImage(name = 'scan.tif'): Promise<void> {
+  await act(async () => {
+    window.dispatchEvent(
+      Object.assign(new Event('paste'), {
+        clipboardData: { files: [file(name)] },
+      }),
+    );
+  });
+  await waitFor(() => text().includes(name), { label: '粘贴的图进入队列' });
 }
 
 async function seedImage(queue: ImageQueueApi, name?: string) {
@@ -572,34 +636,15 @@ describe('调校台 · 导出格式与质量', () => {
   /**
    * 质量滑杆。
    *
-   * 面板里有十几个 range（边距、纹理、钢印…），只能按它所在 label 的名字定位。
-   * `Slider` 的结构是 `label > span > span` 为名字，所以取第一个嵌套 span。
+   * PNG 下整块不渲染，所以这里要能表达"它不存在" —— 返回 null 而不是抛错。
    */
   function qualitySlider(): HTMLInputElement | null {
-    for (const label of Array.from(container?.querySelectorAll('label') ?? [])) {
-      if (label.querySelector('span > span')?.textContent?.trim() !== '质量') continue;
-      const input = label.querySelector<HTMLInputElement>('input[type="range"]');
-      if (input) return input;
-    }
-    return null;
+    return sliderByLabel('质量');
   }
 
-  /**
-   * 拖动滑杆。
-   *
-   * 受控 input 不能直接赋 `.value` —— React 在元素实例上装了 value 的 setter，
-   * 直接赋值会被它记成"没变过"，onChange 根本不触发。必须绕到原型上的原生
-   * setter，再派发 input 事件。
-   */
+  /** 拖动质量滑杆。受控 range 的拖法见模块层的 dragSlider。 */
   async function dragQuality(value: number): Promise<void> {
-    const input = qualitySlider();
-    if (!input) throw new Error('找不到质量滑杆');
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    if (!setter) throw new Error('拿不到 value 的原生 setter');
-    await act(async () => {
-      setter.call(input, String(value));
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await dragSlider('质量', value);
   }
 
   /** 最近一次编码实际用的 MIME 与质量。canvasHarness 已把 toBlob 换成了 spy。 */
@@ -1072,14 +1117,7 @@ describe('调校台 · 与验证台共享队列', () => {
     await mount(<App />);
 
     // 通过全局粘贴入口送一张图进队列，避免依赖 App 内部的 hook 实例
-    await act(async () => {
-      window.dispatchEvent(
-        Object.assign(new Event('paste'), {
-          clipboardData: { files: [file('scan.tif')] },
-        }),
-      );
-    });
-    await waitFor(() => text().includes('scan.tif'), { label: '粘贴的图进入队列' });
+    await pasteImage();
     await waitFor(() => exportButton().disabled === false, { label: '粘贴的图解码完成' });
 
     await act(async () => {
@@ -1095,5 +1133,106 @@ describe('调校台 · 与验证台共享队列', () => {
     expect(text()).toContain('画廊装裱调校台');
     expect(text()).toContain('scan.tif');
     expect(exportButton().disabled).toBe(false);
+  });
+});
+
+describe('调校台 · 与验证台共享装裱设置', () => {
+  /**
+   * 这一组是"切视图丢设置"的验收条件。
+   *
+   * 切视图在 App 里是**卸载重建**（按 view 直接分支返回），队列早就因此被抬到了
+   * App，但装裱配方与导出设置那时留在组件里 —— 去验证台看一眼放大镜再回来，
+   * 边距、构图档、导出尺寸、格式、质量全部回默认。四处断言分别盯住四种 state，
+   * 且都通过**真实算出来的结果**观察（导出行、文件名、滑杆读数），
+   * 而不是"某个 state 变量还在不在"。
+   */
+  it('切到验证台再切回来，装裱配方与导出设置都还在', async () => {
+    // 3000 × 2000 才让"2K 档"与"8K 档"的导出行不同，否则只降不升，两者都是 3000
+    dims = [3000, 2000];
+    await mount(<App />);
+    await pasteImage();
+    expect(planRow('输出')).toBe('3000 × 2000');
+
+    // 四样分属不同 state 的设置，一次改齐
+    await act(async () => {
+      findButton('1 : 1').click();
+    });
+    await dragSlider('卡纸边距', 0.22);
+    await dragSlider('质量', 0.72);
+    await act(async () => {
+      findButton('2K').click();
+    });
+    expect(planRow('输出')).toBe('2048 × 1365');
+    await act(async () => {
+      findButton('PNG').click();
+    });
+    expect(shownFilename().endsWith('.png')).toBe(true);
+
+    await act(async () => {
+      findButton('材质验证台').click();
+    });
+    expect(text()).toContain('1:1 取样放大镜');
+    await act(async () => {
+      findButton('回到调校台').click();
+    });
+
+    // 从前这四行分别是：3000 × 2000、14%、.jpg、自适应
+    expect(planRow('输出')).toBe('2048 × 1365');
+    expect(sliderReadout('卡纸边距')).toBe('22%');
+    expect(shownFilename().endsWith('.png')).toBe(true);
+    expect(findButton('1 : 1').className).toContain('border-white');
+
+    // 质量在 PNG 下没有控件（toBlob 会静默忽略它），切回 JPEG 才看得见 —— 它也必须还在。
+    // 这一条同时证明了"切格式不重置质量"在跨视图之后依然成立。
+    await act(async () => {
+      findButton('JPEG').click();
+    });
+    expect(sliderReadout('质量')).toBe('72% · 明显压缩');
+  });
+
+  it('在验证台里调材质，切回调校台跟着变 —— 两边是同一份配方', async () => {
+    await mount(<App />);
+    expect(sliderReadout('纸张颗粒强度')).toBe('0.040');
+
+    await act(async () => {
+      findButton('材质验证台').click();
+    });
+    // 验证台的滑杆上限只到 0.08，调校台到 0.1 —— 取一个两边都成立的值
+    await dragSlider('纸纤维强度', 0.075);
+    expect(sliderReadout('纸纤维强度')).toBe('0.075');
+
+    await act(async () => {
+      findButton('回到调校台').click();
+    });
+    // 从前这里是 0.040：验证台自己一份 config，那边调完切回来就丢
+    expect(sliderReadout('纸张颗粒强度')).toBe('0.075');
+  });
+
+  it('导出进行中不能切到验证台 —— 导出循环不会随视图切换停下', async () => {
+    dims = [3000, 2000];
+    await mount(<App />);
+    await pasteImage();
+    await waitFor(() => exportButton().disabled === false, { label: '粘贴的图解码完成' });
+    await act(async () => {
+      findButton('2K').click();
+    });
+
+    const entry = findButton('材质验证台');
+    expect(entry.disabled).toBe(false);
+
+    // 同步的 act：导出内部先 await 一个 24ms 的 setTimeout，
+    // 而它不会在同步冲刷里被推进 —— 这里读到的必然是"导出进行中"那一帧
+    act(() => {
+      exportButton().click();
+    });
+    expect(text()).toContain('正在渲染');
+
+    const busyEntry = findButton('材质验证台');
+    expect(busyEntry.disabled).toBe(true);
+    expect(busyEntry.getAttribute('title')).toContain('导出进行中');
+
+    // 等终态再结束，否则残留的导出回调会污染后续用例
+    await waitForExportDone();
+    expect(findButton('材质验证台').disabled).toBe(false);
   });
 });

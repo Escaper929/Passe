@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ASPECT_OPTIONS } from '@/components/aspects';
 import { ChoiceGrid, Section, Slider, ToggleRow } from '@/components/controls';
+import type { FramingSettingsApi } from '@/components/framingSettings';
 import { GalleryFramingEngine } from '@/engine/GalleryFramingEngine';
 import type { PaperTextureMode } from '@/engine/noise';
 import { analyzeSurface, MATBOARD_PRESETS } from '@/engine/palette';
 import { createPreviewSource, hasImageFile } from '@/engine/source';
-import type { FrameConfig, LayerToggles, RenderSource } from '@/engine/types';
+import type { LayerToggles, RenderSource } from '@/engine/types';
 import ImageTray from '@/input/ImageTray';
 import type { ImageQueueApi } from '@/input/useImageQueue';
 
@@ -35,20 +36,6 @@ const LAYER_LABELS: readonly { key: keyof LayerToggles; label: string; hint: str
   { key: 'insetShadow', label: '相纸下落阴影', hint: '四向 Ambient Occlusion' },
   { key: 'stamp', label: '无墨立体钢印', hint: '三明治叠印的凹凸' },
 ];
-
-const INITIAL_CONFIG: FrameConfig = {
-  matColor: '#F8F7F3',
-  marginRatio: 0.14,
-  bottomWeight: 1.25,
-  targetAspect: null,
-  paperTextureIntensity: 0.04,
-  bevelWidth: 2.5,
-  insetShadowBlur: 6,
-  stampDepth: 1.2,
-  enableStamp: true,
-  cameraModel: 'LEICA M6',
-  filmBrand: 'KODAK PORTRA 400',
-};
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -115,10 +102,16 @@ function computeSampleRegion(
 
 export default function MaterialLab({
   queue,
+  settings,
   onBackToStudio,
 }: {
   /** 由 App 持有，两个视图共享同一份队列 */
   queue: ImageQueueApi;
+  /**
+   * 装裱配方。与调校台**共用同一份** —— 在验证台里把纸纤维调粗、切回来看整体，
+   * 这个来回正是这台仪器的用法。若各持一份，那边调完切回来照样丢。
+   */
+  settings: FramingSettingsApi;
   onBackToStudio?: () => void;
 }) {
   // 内置测试图作为兜底素材，保证打开即有所见（队列为空时用它）。
@@ -141,7 +134,9 @@ export default function MaterialLab({
       ? `${queue.active.name} · ${queue.active.width} × ${queue.active.height}`
       : '内置合成测试图 3000 × 2000';
 
-  const [config, setConfig] = useState<FrameConfig>(INITIAL_CONFIG);
+  // 装裱配方来自 App，与调校台共用同一份。这里只留这台仪器自己的瞬态：
+  // 纸纹合成模式、取样锚点、放大镜取样框……它们与成品无关。
+  const { config, patchConfig, patchLayer } = settings;
   const [textureMode, setTextureMode] = useState<PaperTextureMode>('multiply-screen');
   const [anchor, setAnchor] = useState<SampleAnchor>('window-corner');
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
@@ -209,17 +204,6 @@ export default function MaterialLab({
       cancelAnimationFrame(handle);
     };
   }, [previewSource, config, textureMode, fontsReady]);
-
-  const patchConfig = useCallback((patch: Partial<FrameConfig>) => {
-    setConfig((prev) => ({ ...prev, ...patch }));
-  }, []);
-
-  const patchLayer = useCallback((key: keyof LayerToggles, value: boolean) => {
-    setConfig((prev) => ({
-      ...prev,
-      layers: { ...prev.layers, [key]: value },
-    }));
-  }, []);
 
   const renderSample = useCallback(async () => {
     if (!source) return;
@@ -296,6 +280,11 @@ export default function MaterialLab({
           <div>
             <p className="text-[10px] tracking-[0.3em] text-[#777] uppercase">Passe · 衬境</p>
             <h1 className="text-sm font-medium text-white">材质验证台</h1>
+            {/* 两个视图共用同一份配方，这件事得说出来 ——
+                否则用户会以为"我只是在验证台里试了一下"，回头发现调校台也变了 */}
+            <p className="mt-0.5 text-[10px] text-[#555]">
+              装裱参数与调校台是同一份：在这里调完，回那边就是调完的样子
+            </p>
           </div>
           <div className="flex items-center gap-3 text-[11px] text-[#666]">
             <span className="max-w-[30ch] truncate" title={sourceLabel}>

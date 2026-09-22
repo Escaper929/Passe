@@ -25,7 +25,7 @@ import { ChoiceGrid, Section, Slider, TextField, ToggleRow } from '@/components/
 import { GalleryFramingEngine, saveBlob } from '@/engine/GalleryFramingEngine';
 import { analyzeSurface, MATBOARD_PRESETS } from '@/engine/palette';
 import { createPreviewSource, hasImageFile } from '@/engine/source';
-import type { FrameConfig, LayerToggles, RenderSource } from '@/engine/types';
+import type { RenderSource } from '@/engine/types';
 import { reopenFullResolution } from '@/input/decode';
 import { formatMemory } from '@/input/budget';
 import ImageTray from '@/input/ImageTray';
@@ -42,18 +42,16 @@ import {
 } from './batchExport';
 import { ASPECT_OPTIONS } from './aspects';
 import {
-  DEFAULT_EXPORT_FORMAT_ID,
-  DEFAULT_QUALITY,
   EXPORT_FORMATS,
   QUALITY_MAX,
   QUALITY_MIN,
   QUALITY_STEP,
   describeQuality,
   resolveExportFormat,
-  type ExportFormatId,
 } from './exportFormat';
-import { buildExportPlan, DEFAULT_EXPORT_SIZE_ID, EXPORT_SIZES } from './exportPlan';
+import { buildExportPlan, EXPORT_SIZES } from './exportPlan';
 import { createExportSink } from './exportSink';
+import type { FramingSettingsApi } from './framingSettings';
 import { previewBacking } from './previewBacking';
 import { fitPreview } from './previewFit';
 import {
@@ -83,22 +81,10 @@ const PREVIEW_SHORT_SIDE = 1200;
  */
 export const PREVIEW_INSET = 4;
 
-const INITIAL_CONFIG: FrameConfig = {
-  matColor: '#F8F7F3',
-  marginRatio: 0.14,
-  bottomWeight: 1.25,
-  targetAspect: null,
-  paperTextureIntensity: 0.04,
-  bevelWidth: 2.5,
-  insetShadowBlur: 6,
-  stampDepth: 1.2,
-  enableStamp: true,
-  cameraModel: 'LEICA M6',
-  filmBrand: 'KODAK PORTRA 400',
-};
-
 export interface FramingStudioProps {
   queue: ImageQueueApi;
+  /** 装裱配方与导出设置。由 App 持有，与验证台共用同一份 */
+  settings: FramingSettingsApi;
   /** 切到材质验证台。用户判断质感时要用那台 1:1 放大镜 */
   onOpenLab?: () => void;
   /**
@@ -113,25 +99,35 @@ export interface FramingStudioProps {
   renderLimit?: number;
 }
 
-export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioProps) {
-  const [config, setConfig] = useState<FrameConfig>(INITIAL_CONFIG);
-  const [sizeId, setSizeId] = useState(DEFAULT_EXPORT_SIZE_ID);
+export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: FramingStudioProps) {
   /**
-   * 导出格式与 JPEG 质量。
+   * 装裱配方与导出设置全部住在 App（见 framingSettings.ts）。
    *
-   * 质量单独存一份（而不是塞进格式里）：切到 PNG 再切回来时，用户之前选的质量
-   * 应当还在，而不是被重置成默认值 —— 那是同一个"别抹掉用户输入"的原则。
-   * 切换格式**不**重置质量，是因为 PNG 下没有质量可调，重置等于凭空丢一次设置。
+   * 这里只留**瞬态**：拖拽高亮、量出来的盒尺寸、字体是否就绪、本次导出的提示与进度。
+   * 它们重挂载后本来就该重新算，抬上去只会让两个视图为一个看不见的值互相重渲染。
    */
-  const [formatId, setFormatId] = useState<ExportFormatId>(DEFAULT_EXPORT_FORMAT_ID);
-  const [jpegQuality, setJpegQuality] = useState(DEFAULT_QUALITY);
-  /** 守卫的建议值或用户手动指定，优先于 sizeId */
-  const [overrideMaxDimension, setOverrideMaxDimension] = useState<number | null>(null);
-  const [isExporting, setIsExporting] = useState(false);
+  const {
+    config,
+    patchConfig,
+    patchLayer,
+    sizeId,
+    chooseSize,
+    overrideMaxDimension,
+    setOverrideMaxDimension,
+    formatId,
+    setFormatId,
+    jpegQuality,
+    setJpegQuality,
+    isExporting,
+    setIsExporting,
+    isBatching,
+    setIsBatching,
+    busy: frozen,
+  } = settings;
+
   const [exportNote, setExportNote] = useState<string | null>(null);
   /** 批量导出的进行状态。null 表示没在批量 */
   const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
-  const [isBatching, setIsBatching] = useState(false);
   /** 批量导出的汇总。跑完一次就一直留着，直到下次导出 */
   const [batchOutcome, setBatchOutcome] = useState<BatchOutcome | null>(null);
   const [userPresets, setUserPresets] = useState<StudioPreset[]>(() => loadUserPresets());
@@ -256,17 +252,6 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
     };
   }, [previewSource, config, fontsReady]);
 
-  const patchConfig = useCallback((patch: Partial<FrameConfig>) => {
-    setConfig((prev) => ({ ...prev, ...patch }));
-  }, []);
-
-  const patchLayer = useCallback((key: keyof LayerToggles, value: boolean) => {
-    setConfig((prev) => ({
-      ...prev,
-      layers: { ...prev.layers, [key]: value },
-    }));
-  }, []);
-
   const backing = useMemo(() => previewBacking(config.matColor ?? '#F8F7F3'), [config.matColor]);
   const tone = useMemo(
     () => (config.matColor ? analyzeSurface(config.matColor) : null),
@@ -290,15 +275,6 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       limit: renderLimit,
     });
   }, [activeItem, config, sizeId, overrideMaxDimension, formatId, jpegQuality, renderLimit]);
-
-  const chooseSize = useCallback((next: string) => {
-    setSizeId(next);
-    // 手选尺寸意味着用户改变了主意，之前守卫给的修正值应当失效
-    setOverrideMaxDimension(null);
-  }, []);
-
-  /** 导出进行中。队列编辑在此期间必须冻结，理由见 ImageTray 的 locked。 */
-  const frozen = isExporting || isBatching;
 
   /**
    * 整队列的导出方案。
@@ -397,7 +373,7 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       if (fullResolution && fullResolution !== source) disposeSource(fullResolution);
       setIsExporting(false);
     }
-  }, [plan, config, activeFile, source]);
+  }, [plan, config, activeFile, source, setIsExporting]);
 
   const handleExportAll = useCallback(async () => {
     if (!batchPlan || batchPlan.exportable.length === 0 || frozen) return;
@@ -440,7 +416,7 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
       setBatchProgress(null);
       setIsBatching(false);
     }
-  }, [batchPlan, config, frozen]);
+  }, [batchPlan, config, frozen, setIsBatching]);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-studio-bg font-sans text-[#E0E0E0]">
@@ -480,7 +456,25 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
               <button
                 type="button"
                 onClick={onOpenLab}
-                className="rounded border border-[#333] px-3 py-1.5 text-[#BBB] transition-colors hover:border-[#555] hover:text-white"
+                /**
+                 * 导出期间不许切走。
+                 *
+                 * 导出循环是组件里的一段异步代码，它**不会**因为组件被卸载而停下 ——
+                 * 切过去，进度条和"中断导出"按钮就跟着组件一起消失，可写盘还在继续；
+                 * 用户看不到任何反馈，很可能再点一次导出，于是两批同时往同一个
+                 * 目录写同名文件（目录直写是静默覆盖）。等它跑完再切是唯一干净的做法。
+                 */
+                disabled={frozen}
+                title={
+                  frozen
+                    ? '导出进行中。导出不会随视图切换停下，跑完再切'
+                    : '切到 1:1 放大镜，判断材质像不像真的。装裱参数两边是同一份'
+                }
+                className={`rounded border px-3 py-1.5 transition-colors ${
+                  frozen
+                    ? 'cursor-not-allowed border-[#262628] text-[#4A4A4A]'
+                    : 'border-[#333] text-[#BBB] hover:border-[#555] hover:text-white'
+                }`}
               >
                 材质验证台
               </button>
@@ -873,7 +867,7 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
             onClick={() => void handleExport()}
             disabled={!plan || !plan.canExport || frozen}
             className={`mt-3 w-full rounded py-3 text-xs font-medium tracking-widest uppercase transition-all ${
-              plan?.canExport && !isExporting
+              plan?.canExport && !frozen
                 ? 'bg-white text-black hover:bg-[#EAEAEA] active:scale-[0.99]'
                 : 'cursor-not-allowed bg-[#222] text-[#555]'
             }`}
