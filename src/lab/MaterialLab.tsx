@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { ASPECT_OPTIONS } from '@/components/aspects';
 import { ChoiceGrid, Section, Slider, ToggleRow } from '@/components/controls';
 import { GalleryFramingEngine } from '@/engine/GalleryFramingEngine';
 import type { PaperTextureMode } from '@/engine/noise';
@@ -34,13 +35,6 @@ const LAYER_LABELS: readonly { key: keyof LayerToggles; label: string; hint: str
   { key: 'insetShadow', label: '相纸下落阴影', hint: '四向 Ambient Occlusion' },
   { key: 'stamp', label: '无墨立体钢印', hint: '三明治叠印的凹凸' },
 ];
-
-const ASPECTS: readonly { label: string; value: number | null }[] = [
-  { label: '自适应', value: null },
-  { label: '4 : 3', value: 4 / 3 },
-  { label: '5 : 4', value: 5 / 4 },
-  { label: '1 : 1', value: 1 },
-] as const;
 
 const INITIAL_CONFIG: FrameConfig = {
   matColor: '#F8F7F3',
@@ -456,7 +450,7 @@ export default function MaterialLab({
               columns={4}
               value={config.targetAspect ?? null}
               onChange={(next) => patchConfig({ targetAspect: next })}
-              options={ASPECTS.map((item) => ({ value: item.value, label: item.label }))}
+              options={ASPECT_OPTIONS}
             />
           </div>
           <div className="space-y-4">

@@ -10,6 +10,7 @@ import { installCanvasHarness } from '@/test/canvasHarness';
 import { waitFor } from '@/test/waitFor';
 
 import { FramingStudio, PREVIEW_INSET } from './FramingStudio';
+import { ASPECT_OPTIONS } from './aspects';
 import { DEFAULT_QUALITY, EXPORT_FORMATS, type ExportFormatId } from './exportFormat';
 import { PRESET_STORAGE_KEY } from './presets';
 
@@ -367,6 +368,87 @@ describe('调校台 · 预览尺寸', () => {
       delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
       delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
     }
+  });
+});
+
+/**
+ * 画框构图档（含竖屏）。
+ *
+ * 竖屏是这一版的重点：引擎一直支持（`targetAspect` 就是「宽 / 高」，只要求为正），
+ * 缺的只是界面入口。所以这里要防的不是"算不出来"，而是**入口接错** ——
+ * 比例值写反、只有预览转了而导出规格没转、或者构图档顺手把输出像素也改了。
+ */
+describe('调校台 · 画框构图（横竖）', () => {
+  /** 比例按钮的标签是 "3 : 4" 这种短串，按 hint 值精确找（hint 就在 title 上）。 */
+  function aspectButton(label: string): HTMLButtonElement {
+    const option = ASPECT_OPTIONS.find((entry) => entry.label === label);
+    if (!option) throw new Error(`没有这个比例档：${label}`);
+    const match = container?.querySelector<HTMLButtonElement>(`button[title="${option.hint}"]`);
+    if (!match) throw new Error(`找不到比例按钮：${label}`);
+    return match;
+  }
+
+  /** 从面板的「装裱外框」行取出 W / H。 */
+  function plannedFramedRatio(): number {
+    const [w, h] = planRow('装裱外框')
+      .split('（')[0]
+      .split('×')
+      .map((part) => Number(part.trim()));
+    return w / h;
+  }
+
+  it('选 3 : 4 后成品转成竖的，面板规格与预览是同一个比例', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+    await waitFor(() => frameBox().w > 0, { label: '预览渲染出成品' });
+
+    // 默认自适应：3:2 的横片装出来还是横的
+    expect(frameBox().w).toBeGreaterThan(frameBox().h);
+
+    await act(async () => {
+      aspectButton('3 : 4').click();
+    });
+    await waitFor(() => frameBox().h > frameBox().w, { label: '外框转成竖的' });
+
+    const preview = frameBox();
+    expect(preview.w / preview.h).toBeCloseTo(0.75, 2);
+    // 面板上的导出规格要是同一个比例 —— 两处各算一遍的话，用户会看到
+    // "预览是竖的、导出规格却是横的"这种自相矛盾的画面
+    expect(plannedFramedRatio()).toBeCloseTo(0.75, 2);
+
+    // 构图档改的是外框，不是输出像素 —— 素材还是那个素材
+    expect(planRow('输出')).toBe('2000 × 1500');
+  });
+
+  it('9 : 16 把底边留白撑得很宽，但照片本身不被裁', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+    await waitFor(() => frameBox().w > 0, { label: '预览渲染出成品' });
+
+    await act(async () => {
+      aspectButton('9 : 16').click();
+    });
+    await waitFor(() => frameBox().h > frameBox().w * 1.5, { label: '外框变成很长的竖条' });
+
+    expect(plannedFramedRatio()).toBeCloseTo(9 / 16, 2);
+    // 外框变高了，而输出像素没变 —— 多出来的全是卡纸，照片完整无裁切
+    expect(planRow('输出')).toBe('2000 × 1500');
+  });
+
+  it('切回自适应能回到原始比例', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+    await waitFor(() => frameBox().w > 0, { label: '预览渲染出成品' });
+
+    await act(async () => {
+      aspectButton('3 : 4').click();
+    });
+    await waitFor(() => frameBox().h > frameBox().w, { label: '外框转成竖的' });
+
+    await act(async () => {
+      aspectButton('自适应').click();
+    });
+    await waitFor(() => frameBox().w > frameBox().h, { label: '外框回到横向' });
   });
 });
 

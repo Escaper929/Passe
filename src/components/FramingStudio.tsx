@@ -40,6 +40,7 @@ import {
   type BatchOutcome,
   type BatchProgress,
 } from './batchExport';
+import { ASPECT_OPTIONS } from './aspects';
 import {
   DEFAULT_EXPORT_FORMAT_ID,
   DEFAULT_QUALITY,
@@ -81,13 +82,6 @@ const PREVIEW_SHORT_SIDE = 1200;
  * 中性描边来分界的位置。留 4px 就足够让它露出来。
  */
 export const PREVIEW_INSET = 4;
-
-const ASPECTS = [
-  { value: null, label: '自适应' },
-  { value: 4 / 3, label: '4 : 3' },
-  { value: 5 / 4, label: '5 : 4' },
-  { value: 1, label: '1 : 1' },
-] as const;
 
 const INITIAL_CONFIG: FrameConfig = {
   matColor: '#F8F7F3',
@@ -654,7 +648,7 @@ export function FramingStudio({ queue, onOpenLab, renderLimit }: FramingStudioPr
             columns={4}
             value={config.targetAspect ?? null}
             onChange={(next) => patchConfig({ targetAspect: next })}
-            options={ASPECTS.map((item) => ({ value: item.value, label: item.label }))}
+            options={ASPECT_OPTIONS}
           />
         </Section>
 
