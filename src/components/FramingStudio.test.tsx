@@ -9,7 +9,8 @@ import { useImageQueue, type ImageQueueApi } from '@/input/useImageQueue';
 import { installCanvasHarness } from '@/test/canvasHarness';
 import { waitFor } from '@/test/waitFor';
 
-import { FramingStudio, PREVIEW_INSET } from './FramingStudio';
+import { FramingStudio } from './FramingStudio';
+import { PREVIEW_INSET } from './previewFit';
 import { ASPECT_OPTIONS } from './aspects';
 import { DEFAULT_QUALITY, EXPORT_FORMATS, type ExportFormatId } from './exportFormat';
 import { useFramingSettings } from './framingSettings';

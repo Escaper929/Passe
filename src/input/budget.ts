@@ -12,7 +12,7 @@
  * 否则守卫算出的像素数和真实渲染结果会对不上，警告就变成假警报了。
  */
 
-import { MAX_CANVAS_PIXELS } from '@/engine/GalleryFramingEngine';
+import { resolveCanvasLimit } from '@/engine/canvasLimit';
 import { calculateLayout } from '@/engine/layout';
 import type { FrameConfig } from '@/engine/types';
 
@@ -81,13 +81,15 @@ const DEFAULT_LAYOUT_INPUT: Required<LayoutInputLike> = {
 /**
  * 评估按当前配置装裱某张图需要多少像素。
  *
- * `limit` 可注入，便于测试与将来的设备自适应。
+ * `limit` 可注入，便于测试；不传则取**本机**上限（`resolveCanvasLimit()`）——
+ * 手机的单画布上限只有桌面常量的七分之一左右，写死一个数会让守卫在 iOS 上
+ * 放行一次注定画不出东西的导出（详见 engine/canvasLimit.ts）。
  */
 export function assessFrame(
   imageW: number,
   imageH: number,
   config: FrameConfig = {},
-  limit: number = MAX_CANVAS_PIXELS,
+  limit: number = resolveCanvasLimit(),
 ): RenderBudget {
   const input = toLayoutInput(config, DEFAULT_LAYOUT_INPUT);
   const { w: framedW, h: framedH } = framedSize(imageW, imageH, input);
@@ -161,7 +163,7 @@ export function suggestMaxDimension(
   imageW: number,
   imageH: number,
   config: FrameConfig = {},
-  limit: number = MAX_CANVAS_PIXELS,
+  limit: number = resolveCanvasLimit(),
   floor = 1200,
 ): number | null {
   const input = toLayoutInput(config, DEFAULT_LAYOUT_INPUT);

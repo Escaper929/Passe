@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ASPECT_OPTIONS } from '@/components/aspects';
 import { ChoiceGrid, Section, Slider, ToggleRow } from '@/components/controls';
 import type { FramingSettingsApi } from '@/components/framingSettings';
+import { fitPreview, PREVIEW_INSET } from '@/components/previewFit';
 import { GalleryFramingEngine } from '@/engine/GalleryFramingEngine';
 import type { PaperTextureMode } from '@/engine/noise';
 import { analyzeSurface, MATBOARD_PRESETS } from '@/engine/palette';
@@ -140,6 +141,8 @@ export default function MaterialLab({
   const [textureMode, setTextureMode] = useState<PaperTextureMode>('multiply-screen');
   const [anchor, setAnchor] = useState<SampleAnchor>('window-corner');
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
+  /** 预览背板能给成品的净空间（CSS 像素）。0 表示还没量出来 */
+  const [previewBox, setPreviewBox] = useState({ w: 0, h: 0 });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [sampleStatus, setSampleStatus] = useState<'idle' | 'rendering' | 'done' | 'error'>('idle');
@@ -153,6 +156,8 @@ export default function MaterialLab({
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** 预览背板本身。量的是它而不是画布 —— 量画布会形成回环（见 previewFit.ts） */
+  const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const markerRegion = marker && source && marker.source === source ? marker.region : null;
 
   // 钢印用的是 Inter 等系统字体。字体没就绪前渲染，钢印文字会以兜底字体画进画布，
@@ -175,6 +180,46 @@ export default function MaterialLab({
   const previewSource = useMemo(
     () => (source ? createPreviewSource(source, PREVIEW_SHORT_SIDE) : null),
     [source],
+  );
+
+  /**
+   * 量出成品可用的净空间。
+   *
+   * 与调校台同一套做法（缘由见 previewFit.ts）：画布是**替换元素**，
+   * `max-height: 100%` 只在包含块高度确定时才生效，而包着它的盒子高度是按内容
+   * 撑开的，于是那条上限实际被当成 `none`。原来这里靠一句 `max-h-[58vh]` 兜着，
+   * 在窄屏上不再成立 —— 那块区域只剩不到半屏高，58vh 会把底部的放大镜一起顶出去。
+   * 与其回去调那条百分比链，不如把尺寸算出来直接钉住。
+   *
+   * 量的是背板：它的尺寸由 flex 布局决定，与画布无关。
+   */
+  useEffect(() => {
+    const box = previewBoxRef.current;
+    if (!box) return;
+
+    const measure = () => setPreviewBox({ w: box.clientWidth, h: box.clientHeight });
+    measure();
+
+    // jsdom 与老浏览器没有 ResizeObserver，退回监听窗口尺寸
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+
+  const previewFit = useMemo(
+    () =>
+      fitPreview({
+        boxWidth: Math.max(0, previewBox.w - PREVIEW_INSET * 2),
+        boxHeight: Math.max(0, previewBox.h - PREVIEW_INSET * 2),
+        imageWidth: frameSize.w,
+        imageHeight: frameSize.h,
+      }),
+    [previewBox, frameSize],
   );
 
   // 实时预览：配置一变就重绘。预览走降采样副本，所以拖动滑杆不会有负担。
@@ -258,10 +303,12 @@ export default function MaterialLab({
   const tone = config.matColor ? analyzeSurface(config.matColor) : null;
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-studio-bg font-sans text-[#E0E0E0]">
+    /* 与调校台同一套响应式规则：窄屏上下分两段，断点以上左右两栏。
+       两个视图是同一个人在两台之间来回切的，布局规则不该各写一套。 */
+    <div className="flex h-viewport w-full flex-col overflow-hidden bg-studio-bg font-sans text-[#E0E0E0] md:flex-row">
       {/* 视口 */}
       <main
-        className="relative flex flex-1 flex-col bg-studio-viewport select-none"
+        className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-studio-viewport select-none"
         onDragOver={(event) => {
           if (!hasImageFile(event.dataTransfer)) return;
           event.preventDefault();
@@ -276,18 +323,18 @@ export default function MaterialLab({
           queue.ingestFiles(Array.from(event.dataTransfer.files));
         }}
       >
-        <header className="flex items-center justify-between border-b border-studio-line px-6 py-3">
-          <div>
+        <header className="flex items-center justify-between gap-3 border-b border-studio-line px-4 py-2.5 md:px-6 md:py-3">
+          <div className="min-w-0">
             <p className="text-[10px] tracking-[0.3em] text-[#777] uppercase">Passe · 衬境</p>
             <h1 className="text-sm font-medium text-white">材质验证台</h1>
             {/* 两个视图共用同一份配方，这件事得说出来 ——
                 否则用户会以为"我只是在验证台里试了一下"，回头发现调校台也变了 */}
-            <p className="mt-0.5 text-[10px] text-[#555]">
+            <p className="mt-0.5 hidden text-[10px] text-[#555] sm:block">
               装裱参数与调校台是同一份：在这里调完，回那边就是调完的样子
             </p>
           </div>
-          <div className="flex items-center gap-3 text-[11px] text-[#666]">
-            <span className="max-w-[30ch] truncate" title={sourceLabel}>
+          <div className="flex shrink-0 items-center gap-2 text-[11px] text-[#666] md:gap-3">
+            <span className="hidden max-w-[30ch] truncate sm:inline" title={sourceLabel}>
               {sourceLabel}
             </span>
             {onBackToStudio ? (
@@ -302,12 +349,20 @@ export default function MaterialLab({
           </div>
         </header>
 
-        <div className="flex flex-1 items-center justify-center overflow-hidden p-8">
+        <div
+          ref={previewBoxRef}
+          className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3 md:p-8"
+        >
           {source ? (
             <div className="relative inline-block">
               <canvas
                 ref={previewCanvasRef}
-                className="h-auto w-auto max-h-[58vh] max-w-full rounded-xs shadow-[0_24px_48px_rgba(0,0,0,0.55)]"
+                /* 尺寸由 fitPreview 算出来钉住，不再依赖 CSS 百分比上限 */
+                className="block rounded-xs shadow-[0_24px_48px_rgba(0,0,0,0.55)]"
+                style={{
+                  width: `${previewFit.width}px`,
+                  height: `${previewFit.height}px`,
+                }}
               />
               {markerRegion && (
                 <span
@@ -333,7 +388,7 @@ export default function MaterialLab({
         </div>
 
         {/* 高分辨率取样放大镜 */}
-        <section className="border-t border-studio-line bg-studio-panel px-6 py-4">
+        <section className="border-t border-studio-line bg-studio-panel px-4 py-3 md:px-6 md:py-4">
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <span className="text-xs tracking-wider text-[#777] uppercase">1:1 取样放大镜</span>
             <div className="flex gap-1.5">
@@ -380,7 +435,7 @@ export default function MaterialLab({
       </main>
 
       {/* 控制台 */}
-      <aside className="flex w-96 shrink-0 flex-col gap-5 overflow-y-auto border-l border-studio-line bg-studio-panel p-6">
+      <aside className="flex max-h-[46%] w-full shrink-0 flex-col gap-5 overflow-y-auto border-t border-studio-line bg-studio-panel p-4 md:max-h-none md:w-96 md:border-t-0 md:border-l md:p-6">
         <ImageTray queue={queue} />
 
         <Section title="图层逐层开关">

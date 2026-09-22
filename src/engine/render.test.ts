@@ -1,7 +1,8 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { GalleryFramingEngine, MAX_CANVAS_PIXELS } from '@/engine/GalleryFramingEngine';
+import { MAX_CANVAS_PIXELS } from '@/engine/canvasLimit';
+import { GalleryFramingEngine, isBlankCanvas } from '@/engine/GalleryFramingEngine';
 import { drawTrackedText } from '@/engine/materials';
 import type { FrameConfig, RenderSource } from '@/engine/types';
 
@@ -108,9 +109,9 @@ describe('GalleryFramingEngine.render · 画布与几何', () => {
     expect(layout.canvasH).toBeGreaterThan(PHOTO_H);
   });
 
-  it('超出画布内存上限时拒绝渲染并给出可读原因', () => {
+  it('超出本机画布上限时拒绝渲染并给出可读原因', () => {
     const huge = { width: 20000, height: 20000 } as unknown as RenderSource;
-    expect(() => GalleryFramingEngine.render(huge, {})).toThrow(/内存安全上限/);
+    expect(() => GalleryFramingEngine.render(huge, {})).toThrow(/超出本机画布上限/);
     expect(20000 * 20000).toBeGreaterThan(MAX_CANVAS_PIXELS);
   });
 });
@@ -500,5 +501,91 @@ describe('drawTrackedText · 钢印文字必须与相机图标同心', () => {
 
     drawTrackedText(ctx, 'M', 100, 50, 4);
     expect(drawn.map((item) => item.x)).toEqual([90]);
+  });
+});
+
+/**
+ * 空白成品自检。
+ *
+ * 这条自检要拦的是一个**不会报错**的失败：画布超出浏览器能力时，
+ * getContext 照样给上下文，绘制调用也照样返回，只是像素没落上去；
+ * toBlob 于是交出一张纯白图。用户等完进度条得到的是一张什么都没有的图，
+ * 而且没有任何线索指向原因。所以必须真的读像素来判断。
+ */
+describe('空白成品自检', () => {
+  /** 五个图层全关：画布上不会有任何强制绘制，只剩照片自己。 */
+  const NO_LAYERS: FrameConfig = {
+    layers: {
+      mat: false,
+      paperTexture: false,
+      bevel: false,
+      insetShadow: false,
+      stamp: false,
+    },
+  };
+
+  /** 有内容但**完全不透明**的照片。 */
+  function opaquePhoto(): RenderSource {
+    const canvas = createNapiCanvas(200, 150);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('测试照片创建失败');
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, 200, 150);
+    return canvas;
+  }
+
+  /** 一张从没被画过的画布 —— 它留在那儿的就是全透明的初始状态。 */
+  function untouchedCanvas(width: number, height: number): HTMLCanvasElement {
+    return createNapiCanvas(width, height);
+  }
+
+  it('一个像素都没落上去的画布判为空白', () => {
+    expect(isBlankCanvas(untouchedCanvas(64, 64))).toBe(true);
+  });
+
+  it('铺过卡纸底色的画布不判为空白', () => {
+    const photo = opaquePhoto();
+    const framed = GalleryFramingEngine.render(photo, {});
+    // 卡纸底色铺满整张画布，所以第一个取样点（正中心）就已经不透明
+    expect(isBlankCanvas(framed)).toBe(false);
+  });
+
+  it('判据是不透明度而不是颜色：纯黑成品不算空白', () => {
+    const black = createNapiCanvas(120, 90);
+    const ctx = black.getContext('2d');
+    if (!ctx) throw new Error('测试画布创建失败');
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, 120, 90);
+
+    // 用颜色判会在这里误报 —— 炭黑卡纸与夜景照片的取样点本来就是黑的
+    expect(isBlankCanvas(black)).toBe(false);
+  });
+
+  it('画布静默失效时，导出抛可读错误而不是交出一张白图', async () => {
+    // 直接替掉渲染这一步，模拟"尺寸没超但像素就是上不去"的那种画布
+    const spy = vi
+      .spyOn(GalleryFramingEngine, 'render')
+      .mockReturnValue(untouchedCanvas(4096, 4096));
+
+    await expect(GalleryFramingEngine.exportBlob(opaquePhoto(), {})).rejects.toThrow(
+      /成品是空白的/,
+    );
+    // 报错里必须带上尺寸，否则用户不知道要调小到多少
+    await expect(GalleryFramingEngine.exportBlob(opaquePhoto(), {})).rejects.toThrow(/4096×4096/);
+
+    spy.mockRestore();
+  });
+
+  it('图层全关但照片不透明时照常导出', async () => {
+    // 对照组：证明上一道检查认的是"全透明"，不是"没铺卡纸底色"
+    const blob = await GalleryFramingEngine.exportBlob(opaquePhoto(), NO_LAYERS);
+    expect(blob.size).toBeGreaterThan(0);
+  });
+
+  it('图层全关且照片本身透明时判为空白（故意的空也拦）', async () => {
+    const transparent = untouchedCanvas(200, 150) as unknown as RenderSource;
+    await expect(GalleryFramingEngine.exportBlob(transparent, NO_LAYERS)).rejects.toThrow(
+      /成品是空白的/,
+    );
   });
 });

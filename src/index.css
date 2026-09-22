@@ -26,6 +26,30 @@ body,
   height: 100%;
 }
 
+/**
+ * 整屏工作台的高度。
+ *
+ * 手机浏览器收起/展开地址栏时 `100vh`（大视口）与实际可见区域会差出几十像素，
+ * 拿它当高度就会把底部那条状态条与导出按钮顶到屏幕外面 —— 而且是"看不见、
+ * 点不到"的那种丢。`100dvh`（动态视口）跟着地址栏走，才是对的那个。
+ *
+ * 但旧浏览器不认 `dvh`，不能只给它一条。**这里不能写成同一个规则里的两条
+ * height**（"先 100vh 兜底、再 100dvh 覆盖"）：那正是 Tailwind 的 `@utility`
+ * 与 CSS 压缩器会合并掉的写法 —— 实测产物里只剩 `height:100dvh` 一条，
+ * 于是不认 dvh 的浏览器认为整条声明非法、直接丢掉，高度回落成 auto，
+ * 整个 flex 列随之塌掉。用 `@supports` 分成两条规则就绕开了合并：
+ * 不认 dvh 的走下面那条，认得 dvh 的用上面这条。
+ */
+.h-viewport {
+  height: 100dvh;
+}
+
+@supports not (height: 100dvh) {
+  .h-viewport {
+    height: 100vh;
+  }
+}
+
 body {
   margin: 0;
   background: var(--color-studio-bg);
@@ -33,4 +57,6 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* 触屏上点按钮时不要那一块灰色高亮，工作台的按钮密度很高 */
+  -webkit-tap-highlight-color: transparent;
 }

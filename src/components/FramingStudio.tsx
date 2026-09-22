@@ -53,7 +53,7 @@ import { buildExportPlan, EXPORT_SIZES } from './exportPlan';
 import { createExportSink } from './exportSink';
 import type { FramingSettingsApi } from './framingSettings';
 import { previewBacking } from './previewBacking';
-import { fitPreview } from './previewFit';
+import { fitPreview, PREVIEW_INSET } from './previewFit';
 import {
   allPresets,
   applyPreset,
@@ -72,15 +72,6 @@ import {
  */
 const PREVIEW_SHORT_SIDE = 1200;
 
-/**
- * 成品与背板之间强行留出的余量（每一侧）。
- *
- * 描边和投影是画在元素盒子**外面**的，背板的 `overflow-hidden` 会把贴着边的那一侧
- * 整条裁掉 —— 而贴着边的那一侧恰恰是成品与背板相接的地方，正是最需要那条 1px
- * 中性描边来分界的位置。留 4px 就足够让它露出来。
- */
-export const PREVIEW_INSET = 4;
-
 export interface FramingStudioProps {
   queue: ImageQueueApi;
   /** 装裱配方与导出设置。由 App 持有，与验证台共用同一份 */
@@ -88,7 +79,8 @@ export interface FramingStudioProps {
   /** 切到材质验证台。用户判断质感时要用那台 1:1 放大镜 */
   onOpenLab?: () => void;
   /**
-   * 画布像素安全上限，默认 MAX_CANVAS_PIXELS（1.2 亿）。
+   * 画布像素安全上限，默认取 `resolveCanvasLimit()`（触屏设备会先探测本机真实
+   * 能力，桌面则是 1.2 亿的兜底常量）。
    *
    * 与 `assessFrame` / `buildExportPlan` 的 `limit` 是同一个口径，
    * 在这里接出来是为了两条路：小内存设备可以调低；
@@ -419,10 +411,16 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
   }, [batchPlan, config, frozen, setIsBatching]);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-studio-bg font-sans text-[#E0E0E0]">
+    /* 窄屏是**上下**两段、宽屏是**左右**两栏。断点以下侧栏占满宽度，
+       而那正好是整个视口的宽度 —— 6px 的预览意味着这个工具在手机上等于打不开。
+       所以断点以下改成纵向堆叠：预览在上（flex-1 吃掉剩余高度），
+       控制台在下（最多 46% 高，内部滚动）。 */
+    <div className="flex h-viewport w-full flex-col overflow-hidden bg-studio-bg font-sans text-[#E0E0E0] md:flex-row">
       {/* 视口 */}
+      {/* min-h-0 在纵向堆叠时是必需的：flex 子项默认 min-height: auto，
+          会被内部内容顶着长高，把控制台整个挤出视口 */}
       <main
-        className="relative flex min-w-0 flex-1 flex-col select-none"
+        className="relative flex min-h-0 min-w-0 flex-1 flex-col select-none"
         onDragOver={(event) => {
           if (frozen || !hasImageFile(event.dataTransfer)) return;
           event.preventDefault();
@@ -438,17 +436,19 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
           queue.ingestFiles(Array.from(event.dataTransfer.files));
         }}
       >
-        <header className="flex items-center justify-between border-b border-studio-line px-6 py-3">
-          <div>
+        <header className="flex items-center justify-between gap-3 border-b border-studio-line px-4 py-2.5 md:px-6 md:py-3">
+          <div className="min-w-0">
             <p className="text-[10px] tracking-[0.3em] text-[#777] uppercase">Passe · 衬境</p>
             {/* 版本标记挂在入口界面上，用来一眼确认线上跑的是哪一版。
                 值来自 package.json（见 vite.config.ts 的 define）——
                 硬编码的标记一定会漂移，这里不留第二处可改的地方。 */}
             <h1 className="text-sm font-medium text-white">画廊装裱调校台 · v{__APP_VERSION__}</h1>
           </div>
-          <div className="flex items-center gap-3 text-[11px] text-[#666]">
+          <div className="flex shrink-0 items-center gap-2 text-[11px] text-[#666] md:gap-3">
+            {/* 窄屏上文件名让位给入口按钮：底部状态条里另有外框尺寸，
+                而"切到验证台"是这条窄屏上唯一还能挤进来的入口 */}
             {activeItem && activeItem.status === 'ready' ? (
-              <span className="max-w-[30ch] truncate" title={activeItem.name}>
+              <span className="hidden max-w-[30ch] truncate sm:inline" title={activeItem.name}>
                 {activeItem.name} · {activeItem.originalWidth} × {activeItem.originalHeight}
               </span>
             ) : null}
@@ -484,8 +484,8 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
 
         {/* 预览背板。浅色卡纸配深背板、深色卡纸配浅背板，成品才读得出边界 */}
         {/* min-h-0 是必需的：flex 子项默认 min-height: auto，会被超大内容顶着长高，
-            整列于是溢出 h-screen，把底部状态条推出视口 */}
-        <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6">
+            整列于是溢出视口，把底部状态条推出屏幕 */}
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3 md:p-6">
           <div
             ref={previewBoxRef}
             className="flex h-full w-full items-center justify-center overflow-hidden rounded-sm border border-studio-line transition-colors duration-200"
@@ -515,17 +515,27 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className={`flex h-64 w-96 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed px-6 text-center transition-colors ${
+                /* 窄屏上这一块要能塞进剩下那半屏，所以固定高度只在断点以上生效 */
+                className={`flex h-52 w-full max-w-xs cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed px-5 text-center transition-colors md:h-64 md:max-w-sm md:px-6 ${
                   dragging
                     ? 'border-[#7F77DD] bg-[#1E1C2A]'
                     : 'border-[#3A3A3C] bg-black/20 hover:border-[#555]'
                 }`}
               >
                 <span className="text-sm tracking-widest text-[#BBB] uppercase">
-                  {dragging ? '松手即入队' : '选择或拖拽胶片扫描件'}
+                  {/* 拖放与剪贴板在触屏上根本不会触发（touch 不发 dragstart，
+                      移动端键盘也没有 Cmd+V），所以窄屏只承诺"点选"这一条路 */}
+                  {dragging ? (
+                    '松手即入队'
+                  ) : (
+                    <>
+                      <span className="md:hidden">点这里从相册选择</span>
+                      <span className="hidden md:inline">选择或拖拽胶片扫描件</span>
+                    </>
+                  )}
                 </span>
                 <span className="mt-3 text-[11px] leading-relaxed text-[#777]">
-                  {queue.busy ? '正在解码…' : '支持无损 JPEG / PNG / TiFF 与中画幅扫描件'}
+                  {queue.busy ? '正在解码…' : '支持无损 JPEG / PNG / TIFF / HEIC 与中画幅扫描件'}
                   <br />
                   零上传，全部在本地浏览器内完成
                 </span>
@@ -535,7 +545,7 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
         </div>
 
         {/* 状态条 */}
-        <footer className="flex flex-wrap items-center gap-x-6 gap-y-1 border-t border-studio-line bg-studio-panel px-6 py-2 text-[10px] text-[#666]">
+        <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-studio-line bg-studio-panel px-4 py-2 text-[10px] text-[#666] md:gap-x-6 md:px-6">
           {source ? (
             <>
               <span>
@@ -565,7 +575,9 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
       </main>
 
       {/* 控制台 */}
-      <aside className="flex w-96 shrink-0 flex-col gap-5 overflow-y-auto border-l border-studio-line bg-studio-panel p-6">
+      {/* 断点以上：右侧固定 24rem 一栏。断点以下：横向铺满、最多占 46% 高，
+          内部自己滚动 —— 参数有十几组，全展开会把预览挤没 */}
+      <aside className="flex max-h-[46%] w-full shrink-0 flex-col gap-5 overflow-y-auto border-t border-studio-line bg-studio-panel p-4 md:max-h-none md:w-96 md:border-t-0 md:border-l md:p-6">
         <ImageTray queue={queue} variant="compact" locked={frozen} />
 
         <Section title="装裱预设" hint="存的是装裱样式，不含机型与胶卷">

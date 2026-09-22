@@ -15,7 +15,7 @@
  * 全是纯计算，所以整批的判定都能脱离浏览器逐条钉住。
  */
 
-import { MAX_CANVAS_PIXELS } from '@/engine/GalleryFramingEngine';
+import { resolveCanvasLimit } from '@/engine/canvasLimit';
 import type { FrameConfig } from '@/engine/types';
 import { assessFrame, HEAVY_LOAD } from '@/input/budget';
 
@@ -145,7 +145,7 @@ export function uniquifyFilenames(names: readonly string[]): string[] {
 export function suggestUnifiedMaxDimension<T extends BatchCandidate>(
   items: readonly T[],
   config: FrameConfig,
-  limit: number = MAX_CANVAS_PIXELS,
+  limit: number = resolveCanvasLimit(),
   floor = 1200,
 ): number | null {
   const measurable = items.filter((item) => item.originalWidth > 0 && item.originalHeight > 0);

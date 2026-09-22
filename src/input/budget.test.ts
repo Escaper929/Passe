@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MAX_CANVAS_PIXELS } from '@/engine/GalleryFramingEngine';
+import { MAX_CANVAS_PIXELS } from '@/engine/canvasLimit';
 import { calculateLayout } from '@/engine/layout';
 
 import {

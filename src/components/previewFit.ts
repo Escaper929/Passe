@@ -26,6 +26,17 @@ export interface PreviewFitInput {
   imageHeight: number;
 }
 
+/**
+ * 成品与背板之间强行留出的余量（每一侧）。
+ *
+ * 描边和投影是画在元素盒子**外面**的，背板的 `overflow-hidden` 会把贴着边的那一侧
+ * 整条裁掉 —— 而贴着边的那一侧恰恰是成品与背板相接的地方，正是最需要那条 1px
+ * 中性描边来分界的位置。留 4px 就足够让它露出来。
+ *
+ * 调校台与验证台共用这一个数：两个视图的预览是同一件事，余量没理由各写一份。
+ */
+export const PREVIEW_INSET = 4;
+
 export interface PreviewFit {
   /** 画布应占据的 CSS 尺寸。为 0 表示还量不出可用区域，调用方应先把画布藏起来 */
   width: number;
