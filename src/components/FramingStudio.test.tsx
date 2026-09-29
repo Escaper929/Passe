@@ -593,6 +593,12 @@ describe('调校台 · 导出路径', () => {
     await waitForExportDone();
 
     expect(objectUrls).toBe(1);
+
+    // 撤销是**推后一轮**做的（缘由见 saveBlob）：与 click 同一轮撤销在 Chromium 上
+    // 看不出来，在 Safari 上会静默丢掉这次下载。所以先让出一轮，再断言"该撤的撤了"。
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     expect(vi.mocked(URL.revokeObjectURL)).toHaveBeenCalledTimes(1);
   });
 
@@ -979,6 +985,11 @@ describe('调校台 · 批量导出', () => {
     // 少一次就是泄漏，多一次就是重复释放，两种都会在这里现形。
     expect(closeCalls - closesBefore).toBe(3);
     expect(objectUrls).toBe(3);
+
+    // 同上：三张各自安排了一次推后撤销，让出一轮后应当全部兑现
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     expect(vi.mocked(URL.revokeObjectURL)).toHaveBeenCalledTimes(3);
 
     expect(text()).toContain('已导出 3 张');

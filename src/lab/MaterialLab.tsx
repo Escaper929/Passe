@@ -422,13 +422,27 @@ export default function MaterialLab({
             </button>
             <span className="text-[11px] text-[#666]">{sampleNote}</span>
           </div>
+          {/* 还没取样时不要摆一个空的纯黑框 —— 那在界面上就是一个洞，用户得自己
+              猜到"得先去点右边那个按钮"。换成一句占位，把下一步直接说出来。
+
+              注意画布本身**不能卸载**：`renderSample` 是拿它的 ref 往上画的，
+              卸载掉 ref 就没了。所以这里只把外框藏起来。 */}
+          {sampleStatus === 'idle' ? (
+            <p className="w-fit max-w-full rounded border border-dashed border-studio-line px-3 py-2 text-[11px] text-[#666]">
+              还没有取样。选一个取样位置，点「渲染高分辨率样本」，这里会给出该处的 1:1 像素。
+            </p>
+          ) : null}
           {/* 这层黑底要**贴着画布**，不能撑满整行。
               放大镜显示的是 1:1 采样，所以画布尺寸被钳在 LOUPE_WIDTH × LOUPE_HEIGHT
               以内（放大只会把材质糊掉，失去"判断像不像真的"这个用途）。而块级容器
               会占满整行 —— 多出来的部分就是一片纯黑。实测 1440 视口下容器 1008px、
               画布 720px，右侧 288px 全是这层黑底透出来的，看着像坏了。
               w-fit + max-w-full：宽屏贴着画布，窄屏仍然能缩进容器。 */}
-          <div className="w-fit max-w-full overflow-hidden rounded border border-studio-line bg-black">
+          <div
+            className={`w-fit max-w-full overflow-hidden rounded border border-studio-line bg-black ${
+              sampleStatus === 'idle' ? 'hidden' : ''
+            }`}
+          >
             <canvas ref={loupeCanvasRef} className="block h-auto max-w-full" />
           </div>
         </section>

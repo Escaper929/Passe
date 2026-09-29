@@ -212,8 +212,7 @@ export class GalleryFramingEngine {
  * 把 Blob 存成文件。
  *
  * 单独抽出来是因为导出流程被拆成了"重解原图 → 渲染 → 保存 → 释放"四步，
- * 保存这一步得能被单独调用。objectURL 用完立即回收 —— 8K 成品的 blob
- * 是几十 MB 级别，忘了 revoke 就是一直占着。
+ * 保存这一步得能被单独调用。
  */
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -223,7 +222,27 @@ export function saveBlob(blob: Blob, filename: string): void {
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
+  scheduleObjectUrlRevoke(url);
+}
+
+/**
+ * 撤销对象 URL —— **推后一轮任务，不能与 `click()` 同一轮**。
+ *
+ * 原来的写法是 `anchor.click()` 之后**同步** `revokeObjectURL`。那等于在浏览器
+ * 把这次下载真正排上队之前就把目标 URL 拆掉了：Chromium 恰好扛得住，于是这个
+ * 写法在桌面 Chrome 里看不出任何问题；Safari / Firefox 上则会直接丢掉这次下载
+ * —— 而且是**静默丢掉**，用户等半天什么也没拿到。本工具的主要目标就是 iOS Safari，
+ * 所以这一行必须改。
+ *
+ * 关键在**任务边界**，不在时长：撤销与 click 只要不在同一轮，浏览器就有机会先把
+ * 下载交给网络层。所以给的是"下一轮"而不是某个估算出来的毫秒数 ——
+ * 更长的窗口买不到额外安全，只会让 blob 多挂一会儿。
+ *
+ * 也不能干脆不撤销 —— 那才是真的把每个 blob 永久挂在对象 URL 上。
+ * 这里保留撤销、只是换个时机，两头都不牺牲。
+ */
+function scheduleObjectUrlRevoke(url: string): void {
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 /**
