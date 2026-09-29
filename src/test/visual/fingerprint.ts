@@ -40,7 +40,7 @@ import type { Layout } from '@/engine/layout';
  * - **纸纹强度**：强度 0.04 时逐像素抖动约 ±2.3，单点采样下远小于容差，
  *   因此"纸纹整层关掉"这条探针**抓不到** —— 它由 `render.test.ts` 里
  *   针对性的断言守着（平均绝对偏差 2.29 vs 0.00）。
- * - **钢印文字与图标的墨迹**：整条文字带被排除在外（见下），
+ * - **钢印文字与图标的墨迹**：整条底边带被排除在外（见下），
  *   由排版数学与炭黑反差两条断言守着。
  *
  * ## 与钢印文字的关系
@@ -48,11 +48,11 @@ import type { Layout } from '@/engine/layout';
  * 钢印文字用的是 `Inter, -apple-system, BlinkMacSystemFont, sans-serif`。
  * 本机 macOS 落到 SF Pro，CI 的 ubuntu 上这三个都没有、落到 DejaVu，
  * 字形宽度与抗锯齿都不一样；而钢印是**逐字居中**的，宽度一变整行就平移。
- * 9.5px 的小字会把这点差异放大成整条带子的错位。
+ * 实测同一行 51 个字的宽名，CI 上的墨迹是本机的 1.4 倍。
  *
- * 所以指纹**刻意避开钢印文字带**：网格里与该带相交的格子记为 `null`（不参与比对），
- * 四条探针也全部走在文字带之外。这个范围由两条用例锁住 ——
- * `stampTextBand` 的注释里写了具体是哪两条。
+ * 所以指纹**刻意避开整条底边带**：网格里与该带相交的格子记为 `null`（不参与比对），
+ * 而那四条边缘探针的采样位置全部避开了居中的钢印墨迹。
+ * 这个范围由三条用例锁住 —— `stampExclusionBand` 的注释里写了具体是哪三条。
  */
 
 /** 网格分辨率。 */
@@ -112,7 +112,7 @@ export const SCALE_TOLERANCES: Tolerances = {
 export interface GridFingerprint {
   cols: number;
   rows: number;
-  /** 逐格平均亮度；`null` 表示该格落在钢印文字带内、不参与比对。 */
+  /** 逐格平均亮度；`null` 表示该格落在底边带内、不参与比对。 */
   cells: (number | null)[];
 }
 
@@ -194,38 +194,44 @@ function lumaAtPixel(
   return luma(data[i], data[i + 1], data[i + 2]);
 }
 
-/* ─────────────────────────── 钢印文字带 ─────────────────────────── */
+/* ─────────────────────── 钢印的排除区（底边带） ─────────────────────── */
 
 /**
- * 保守的钢印文字带（画布坐标）。
+ * 指纹**不参与比对**的区域（画布坐标）：相片下沿到底边，横向**整幅**。
  *
- * 横向取画布宽的 25%~75%：钢印内容在底边距里**居中**，
- * 文字宽度随字体而变（跨平台差得最多就是这个），所以不能按实测宽度算 ——
- * 那样等于把字体差异引回来。25%~75% 这个范围足够宽，能盖住
- * 50 字符级的长机型名；纵向取相片下沿到底边。
+ * ## 为什么横向不留边
  *
- * 由两条用例锁住：
+ * 这一处曾经取画布宽的 25%~75%，理由是"钢印内容居中、这个范围能盖住 50 字符级的长名"。
+ * 横向留边是个陷阱 —— 钢印文字的宽度随**宿主字体**剧烈变化：同一行字，
+ * CI（ubuntu-latest 没有 Arial/Helvetica，落到 DejaVu 系）比本机宽 1.4~1.5 倍。
+ * 于是任何"刚好够宽"的固定框都会在另一台机器上被撑破，文字漏进指纹，
+ * 「换掉机型名指纹必须不变」那条锁就开始假报 —— 那错在框，不在代码。
+ * 实测（字号抬到 21 之后，51 字的 `stamp-long-name`）：
+ * 本机占带宽 81%，**CI 上 112%**，已经越过去了。
+ * 任何"按最坏字体算、又刚好够"的框，最终都要覆盖整条底边带才会安全 ——
+ * 那不如直接说清楚。
+ *
+ * 代价很小：底边带里本来只有卡纸和钢印，而网格是 16×16 = 256 格，
+ * 全宽只比原来的 25%~75% 多排除 8 格（3%）。换来的是一条**与字体无关**的边界：
+ * 相片以下的一切都不进指纹。
+ *
+ * ## 由三条用例锁住
+ *
  * 1. `visualRegression.test.ts`「换掉机型名指纹必须不变」—— 证明带内确实没参与比对；
- * 2. 同文件「每个场景的钢印文字都落在排除带内」—— 按各场景真实字体**实测**宽度，
- *    证明带够宽（有人把机型名写长了、或调大了字号，这条会先失败）。
- *
- * ⚠️ 这条带子的余量**比本机数字看着紧**。同一份代码，CI（ubuntu-latest）没有
- * Arial/Helvetica，落到 DejaVu 系，墨迹比本机宽约 1.37~1.50 倍：
- * 默认 25 字的场景本机占带宽 24%~36%，CI 上 33%~49%；51 字的 `stamp-long-name`
- * 本机 54%、**CI 75%** —— 也就是说带子真正的余量是 25%，不是 46%。
- * 这个宽度是**故意**取的（比它对得更紧，跨平台就会假报），所以别为了"更保险"
- * 而收窄它；要动就整体重算，并接受下面那条排除规则会换掉一批探针、基线要重建。
- * 另外别拿它当"钢印不许越界"的判定线 —— 它是与字体无关的固定框，而墨迹不是。
+ * 2. 同文件「钢印整块落在底边带内」—— 证明钢印没越到相片上。
+ *    第 1 条是**自证**的：真要漏进指纹，第 1 条会红。而它成立的前提正是第 2 条，
+ *    所以第 2 条不能删。
+ * 3. 同文件「负向对照」—— 证明排除带没有把该抓的回归一起排除掉。
  */
-export function stampTextBand(layout: Layout): {
+export function stampExclusionBand(layout: Layout): {
   x0: number;
   x1: number;
   y0: number;
   y1: number;
 } {
   return {
-    x0: layout.canvasW * 0.25,
-    x1: layout.canvasW * 0.75,
+    x0: 0,
+    x1: layout.canvasW,
     y0: layout.y + layout.h,
     y1: layout.canvasH,
   };
@@ -240,10 +246,10 @@ function gridCellRect(layout: Layout, col: number, row: number) {
   };
 }
 
-/** 与钢印文字带**相交**就排除（不是"中心落在带内"才排除，否则半个格子的文字会漏进来）。 */
+/** 与底边带**相交**就排除（不是"中心落在带内"才排除，否则半个格子的文字会漏进来）。 */
 function isCellExcluded(layout: Layout, col: number, row: number): boolean {
   const cell = gridCellRect(layout, col, row);
-  const band = stampTextBand(layout);
+  const band = stampExclusionBand(layout);
   return !(cell.x1 <= band.x0 || cell.x0 >= band.x1 || cell.y1 <= band.y0 || cell.y0 >= band.y1);
 }
 
@@ -271,7 +277,7 @@ const span = (layout: Layout): number => EDGE_PROBE_SPAN * layout.scale;
  * 不同尺寸（1200 / 3600 短边）与不同边距比例的画布 ——
  * 它们始终落在同一处**结构**上。
  *
- * 四条都刻意避开居中的钢印文字带：`edge-bottom` 走在文字左侧，
+ * 四条都刻意避开居中的钢印墨迹：`edge-bottom` 走在文字左侧，
  * 其余三条在窗口上半部。
  */
 export const PROFILE_SPECS: readonly ProfileSpec[] = [
@@ -586,9 +592,7 @@ export function formatDiff(diff: FingerprintDiff): string {
   for (const reason of diff.reasons) {
     lines.push(`  · ${reason}`);
   }
-  lines.push(
-    `  比对点 ${diff.comparedPoints} 个（另有 ${diff.skippedCells} 个网格被钢印文字带排除）`,
-  );
+  lines.push(`  比对点 ${diff.comparedPoints} 个（另有 ${diff.skippedCells} 个网格被底边带排除）`);
   lines.push(`  ${summarizeDiff(diff)}`);
   for (const item of diff.mismatches.slice(0, 12)) {
     lines.push(

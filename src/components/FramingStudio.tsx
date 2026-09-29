@@ -60,6 +60,7 @@ import {
 import { buildExportPlan, EXPORT_SIZES } from './exportPlan';
 import { createExportSink } from './exportSink';
 import type { FramingSettingsApi } from './framingSettings';
+import { canShareFiles, fileFromBlob, shareFiles } from './photoSaver';
 import { previewBacking } from './previewBacking';
 import { fitPreview, PREVIEW_INSET } from './previewFit';
 import {
@@ -127,6 +128,51 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
   } = settings;
 
   const [exportNote, setExportNote] = useState<string | null>(null);
+  /**
+   * 为"存到相册"渲染好的成品。
+   *
+   * 之所以要把它攥在手里，见 `photoSaver.ts` 文件头：iOS 的瞬时激活经不起 await，
+   * 而渲染一张 8K 成品要几秒 —— 必须先生成、再在一次**干净的点击**里交出去。
+   * 只留文件本身，URL 由下面 `useMemo` 派生 —— 谁能撤销哪一张就一目了然。
+   */
+  const [album, setAlbum] = useState<{
+    file: File;
+    filename: string;
+    bytes: number;
+    w: number;
+    h: number;
+  } | null>(null);
+  const albumUrl = useMemo(() => (album ? URL.createObjectURL(album.file) : null), [album]);
+
+  /**
+   * 成品图的 blob URL 只在"**它自己那一张**"上撤销。
+   *
+   * 写成"依赖 `albumUrl` 的清理函数"而不是"在 setter 里撤上一个"，
+   * 是为了让撤销对象与被撤销的 URL 一一对应 —— 成品图几十兆，撤错对象
+   * 就是一张挂到刷新页面的位图。
+   * 顺带一提，这不怕 StrictMode 的双调用：挂载时 `album` 还是 null，
+   * 那次模拟卸载什么也没得撤。
+   */
+  useEffect(() => {
+    if (!albumUrl) return;
+    return () => URL.revokeObjectURL(albumUrl);
+  }, [albumUrl]);
+
+  /**
+   * 这台设备能不能把**文件**交给分享面板（= 能不能走「存储到相册」）。
+   *
+   * 拿一个真的 jpeg 去问 `canShare` —— 只判断 `navigator.share` 存在是不够的，
+   * 只支持分享链接的环境也有 `share`，塞文件进去会抛（见 `photoSaver`）。
+   * 不支持时整块都不显示：iOS 之外既没有相册也没有系统分享面板，
+   * 摆一个点了没反应的按钮比不摆更糟。
+   */
+  const canShareAlbum = useMemo(() => {
+    if (typeof File === 'undefined') return false;
+    const probe = new File([new Blob([''], { type: 'image/jpeg' })], 'passe-probe.jpg', {
+      type: 'image/jpeg',
+    });
+    return canShareFiles([probe]);
+  }, []);
   /** 批量导出的进行状态。null 表示没在批量 */
   const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
   /** 批量导出的汇总。跑完一次就一直留着，直到下次导出 */
@@ -342,6 +388,33 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
     cancelBatchRef.current = true;
   }, []);
 
+  /**
+   * 渲染一张成品。
+   *
+   * 落盘与"存到相册"两条路共用这一段。抄第二遍就一定会抄漏一遍，
+   * 而漏掉的是"重解出来的原图必须释放"这条底线 —— 那是本工具最在意的内存纪律。
+   */
+  const renderExportBlob = useCallback(async (): Promise<Blob | null> => {
+    if (!plan || !plan.canExport || !source) return null;
+
+    let fullResolution: RenderSource | null = null;
+    try {
+      // 原图不常驻内存，导出这一刻才重新解码。一次只解一张，用完必须释放。
+      fullResolution = activeFile ? await reopenFullResolution(activeFile) : source;
+
+      return await GalleryFramingEngine.exportBlob(fullResolution, config, {
+        // 编码参数取自 plan，而不是组件 state —— 面板上展示的文件名就是同一个
+        // plan 算出来的，两者同源才不会出现"写着 .png、导出却是个 .jpg"
+        format: plan.mimeType,
+        quality: plan.quality,
+        maxDimension: plan.maxDimension ?? undefined,
+      });
+    } finally {
+      // 只释放我们重解出来的那张；若直接把预览副本当作来源，则不能关
+      if (fullResolution && fullResolution !== source) disposeSource(fullResolution);
+    }
+  }, [plan, config, activeFile, source]);
+
   const handleExport = useCallback(async () => {
     if (!plan || !plan.canExport || !source) return;
 
@@ -350,18 +423,9 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
     // 合成一张 8K 成品是同步的重活，先让浏览器把 loading 状态画出来
     await new Promise((resolve) => setTimeout(resolve, 24));
 
-    let fullResolution: RenderSource | null = null;
     try {
-      // 原图不常驻内存，导出这一刻才重新解码。一次只解一张，用完必须释放。
-      fullResolution = activeFile ? await reopenFullResolution(activeFile) : source;
-
-      const blob = await GalleryFramingEngine.exportBlob(fullResolution, config, {
-        // 编码参数取自 plan，而不是组件 state —— 面板上展示的文件名就是同一个
-        // plan 算出来的，两者同源才不会出现"写着 .png、导出却是个 .jpg"
-        format: plan.mimeType,
-        quality: plan.quality,
-        maxDimension: plan.maxDimension ?? undefined,
-      });
+      const blob = await renderExportBlob();
+      if (!blob) return;
 
       saveBlob(blob, plan.filename);
       setExportNote(
@@ -370,11 +434,81 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
     } catch (error) {
       setExportNote(error instanceof Error ? error.message : String(error));
     } finally {
-      // 只释放我们重解出来的那张；若直接把预览副本当作来源，则不能关
-      if (fullResolution && fullResolution !== source) disposeSource(fullResolution);
       setIsExporting(false);
     }
-  }, [plan, config, activeFile, source, setIsExporting]);
+  }, [plan, source, renderExportBlob, setIsExporting]);
+
+  /**
+   * 渲染成品、摆到界面上，等用户点「存储到照片」。
+   *
+   * **只渲染，不碰分享面板。** 那一步要留到下一次干净的点击 —— 理由见
+   * `photoSaver.ts` 文件头（iOS 的瞬时激活经不起 await）。
+   * 所以"存到相册"是两次点击，这不是妥协，而是把"渲染要花时间"摆到界面上。
+   */
+  const handlePrepareAlbum = useCallback(async () => {
+    if (!plan || !plan.canExport || !source) return;
+
+    setIsExporting(true);
+    setExportNote(null);
+    await new Promise((resolve) => setTimeout(resolve, 24));
+
+    try {
+      const blob = await renderExportBlob();
+      if (!blob) return;
+
+      setAlbum({
+        file: fileFromBlob(blob, plan.filename),
+        filename: plan.filename,
+        bytes: blob.size,
+        w: plan.framedW,
+        h: plan.framedH,
+      });
+      setExportNote(
+        `成品已生成（${plan.framedW} × ${plan.framedH} · ${formatMemory(blob.size)}）。` +
+          '点「存储到照片」交给系统相册。',
+      );
+    } catch (error) {
+      setExportNote(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsExporting(false);
+    }
+  }, [plan, source, renderExportBlob, setIsExporting]);
+
+  /**
+   * 交给系统分享面板 —— iOS 面板里的「存储图像」就是往相册存。
+   *
+   * ⚠️ **第一句就必须是 `shareFiles`，前面不许有任何 `await`。**
+   * 这个调用会消耗掉点击带来的瞬时激活；先 await 一下（哪怕只是先算个尺寸）
+   * iOS 上就会静默失败 —— 而桌面 Chrome 照样能弹面板，于是这种坏法
+   * 只在手机上暴露。见 `photoSaver.ts` 文件头与 WebKit bug 225559。
+   */
+  const handleShareAlbum = useCallback(() => {
+    if (!album) return;
+
+    // 同步拿到 promise，再在回调里处理结果 —— 调用本身留在同步段里
+    void shareFiles([album.file]).then((outcome) => {
+      if (outcome === 'shared') {
+        setExportNote('已交给系统。分享面板里选「存储图像」即进相册。');
+      } else if (outcome === 'cancelled') {
+        // 用户划掉面板不是错误，安静收场
+        setExportNote(null);
+      } else {
+        setExportNote('这台设备不支持把文件交给分享面板 —— 请长按上面的图片，选「存储图像」。');
+      }
+    });
+  }, [album]);
+
+  /** 兜底：还是想存进「文件」App 的人，用原来那条下载 */
+  const handleAlbumDownload = useCallback(() => {
+    if (!album) return;
+    saveBlob(album.file, album.filename);
+    setExportNote(`已下载 ${album.filename}（${formatMemory(album.bytes)}）。`);
+  }, [album]);
+
+  const handleCloseAlbum = useCallback(() => {
+    setAlbum(null);
+    setExportNote(null);
+  }, []);
 
   const handleExportAll = useCallback(async () => {
     if (!batchPlan || batchPlan.exportable.length === 0 || frozen) return;
@@ -922,6 +1056,80 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
           >
             {isExporting ? '正在渲染超清装裱大图…' : '导出画廊装裱作品'}
           </button>
+
+          {/*
+            存到相册。
+
+            iOS 上**没有**能写系统相册的 Web API（Safari 至今不支持
+            showSaveFilePicker），`<a download>` 只会把文件放进「文件」App ——
+            相册里自然找不到。能走通的只有"把文件交给系统"：分享面板里的
+            「存储图像」，或者长按图片选「存储图像」。详见 `photoSaver.ts`。
+
+            所以这里是两步：先渲染、再在一次干净的点击里交出去。
+            渲染要几秒，而 share() 经不起 await（iOS 会丢掉瞬时激活）——
+            合成一步的话，手机上会变成"点了没反应"。
+          */}
+          {canShareAlbum ? (
+            <button
+              type="button"
+              onClick={() => void handlePrepareAlbum()}
+              disabled={!plan || !plan.canExport || frozen}
+              className={`mt-2 w-full rounded border py-2.5 text-[11px] tracking-wider transition-colors ${
+                plan?.canExport && !frozen
+                  ? 'border-[#3A3A3C] text-[#DDD] hover:border-[#5A5A5C] hover:text-white'
+                  : 'cursor-not-allowed border-[#222] text-[#555]'
+              }`}
+            >
+              {isExporting ? '正在生成…' : '生成并存储到相册'}
+            </button>
+          ) : null}
+
+          {album && albumUrl ? (
+            <div className="mt-2 rounded border border-[#2A2A2C] bg-[#161618] p-3">
+              <p className="text-[10px] leading-relaxed text-[#888]">
+                点「存储到照片」，在系统面板里选
+                <span className="text-[#C9A961]">「存储图像」</span>
+                即进相册；或者直接<b className="text-[#BBB]">长按下面的图片</b>选「存储图像」。
+              </p>
+
+              {/* 长按存图的落点。刻意摆真图而不是只给按钮 ——
+                  iOS 的长按菜单只认 img，且这是不依赖任何 API 的那条路 */}
+              <img
+                src={albumUrl}
+                alt={`成品图 ${album.filename}`}
+                className="mt-2 max-h-[220px] w-full rounded border border-[#222] bg-[#0E0E10] object-contain"
+              />
+
+              <p className="mt-1.5 text-[10px] text-[#666]">
+                {album.w} × {album.h} · {formatMemory(album.bytes)}
+              </p>
+
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleShareAlbum}
+                  className="rounded bg-white py-2 text-[11px] font-medium tracking-wider text-black transition-colors hover:bg-[#EAEAEA]"
+                >
+                  存储到照片
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAlbumDownload}
+                  className="rounded border border-[#3A3A3C] py-2 text-[11px] text-[#BBB] transition-colors hover:border-[#5A5A5C] hover:text-white"
+                >
+                  下载到文件
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleCloseAlbum}
+                className="mt-2 w-full text-[10px] text-[#666] transition-colors hover:text-white"
+              >
+                收起
+              </button>
+            </div>
+          ) : null}
 
           {batchPlan ? (
             <section className="mt-6 border-t border-studio-line pt-5">

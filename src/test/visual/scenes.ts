@@ -15,7 +15,7 @@ import { createNativeCanvas } from './nativeCanvas';
  * - 全层关闭的纯净几何（任何纹理渗漏到这里都会露馅）
  * - 底边加权、边距两端、纸纹强度上限
  * - 尺度两端：scaleFactor < 1 的小图下限、超大源图
- * - 长机型名（压钢印文字带的排除范围）
+ * - 长机型名（最宽的一行钢印字）
  * - 固定外框比例下的裁切路径
  *
  * 场景本身**不做任何断言**，它只是"输入"；期望值全部在 baseline JSON 里。
@@ -97,7 +97,7 @@ export const VISUAL_SCENES: readonly VisualScene[] = [
   },
   {
     id: 'stamp-long-name',
-    note: '长机型名 + 长胶卷名：钢印文字带的宽度上限',
+    note: '长机型名 + 长胶卷名：最宽的一行字，相片宽度与底边带都要容得下',
     photo: { width: 1200, height: 800 },
     config: {
       matColor: '#F8F7F3',

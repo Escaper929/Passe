@@ -1434,3 +1434,180 @@ describe('调校台 · 钢印的候选值', () => {
     expect(chipIfAny('LEICA M6')).toBeNull();
   });
 });
+
+/**
+ * 存到相册。
+ *
+ * iOS 上没有能写系统相册的 Web API，只能把文件**交给系统**（分享面板里的
+ * 「存储图像」或长按图片）—— 细节见 `photoSaver.ts`。这里守的是接线：
+ * 能力探测有没有把按钮的显隐搞对、交给分享面板的是不是一个**真的 File**、
+ * 以及两次点击的流程有没有被合成一次。
+ */
+describe('调校台 · 存到相册', () => {
+  /** 记录交给分享面板的东西。null 表示这套环境根本没有 share */
+  let shared: File[][] = [];
+  let shareRejects: unknown = null;
+
+  /**
+   * 分享真的失败时那条退路提示里独有的一句话。
+   *
+   * 判据必须只出现在**这条提示**里。这里踩过两次：
+   * ① 一开始拿「失败」当判据 —— 而状态条之外，素材栏本身就有一句
+   *    "若预览失败请先导出为 PNG 或 JPEG"，划掉面板也会撞上；
+   * ② 换成「长按」也没用 —— 展开的面板里就写着"或者直接长按下面的图片"，
+   *    于是"给出长按退路"那条用例无论提示出来没有都会通过（**空断言**）。
+   * 所以取提示里独有的半句，收尾还带上语序不会撞车的"不支持"。
+   */
+  const SHARE_FALLBACK_NOTE = '不支持把文件交给分享面板';
+
+  function installShare(canShare: boolean): void {
+    Object.defineProperty(navigator, 'canShare', {
+      value: () => canShare,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(navigator, 'share', {
+      value: (data: ShareData) => {
+        shared.push([...(data.files ?? [])]);
+        return shareRejects ? Promise.reject(shareRejects) : Promise.resolve();
+      },
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  function removeShare(): void {
+    delete (navigator as unknown as Record<string, unknown>).share;
+    delete (navigator as unknown as Record<string, unknown>).canShare;
+  }
+
+  beforeEach(() => {
+    shared = [];
+    shareRejects = null;
+  });
+
+  afterEach(() => {
+    removeShare();
+  });
+
+  function albumButtonIfAny(): HTMLButtonElement | null {
+    const buttons = Array.from(container?.querySelectorAll('button') ?? []);
+    return (
+      (buttons.find((button) =>
+        /生成并存储到相册|正在生成/.test(button.textContent ?? ''),
+      ) as HTMLButtonElement) ?? null
+    );
+  }
+
+  function albumImage(): HTMLImageElement | null {
+    return container?.querySelector('img[alt^="成品图"]') ?? null;
+  }
+
+  /** 点「生成并存储到相册」，等到图真的摆出来 */
+  async function generateAlbum(): Promise<void> {
+    await act(async () => {
+      albumButtonIfAny()!.click();
+    });
+    await waitFor(() => albumImage() !== null, { label: '成品图摆出来了' });
+  }
+
+  it('这套环境不支持时整块都不出现 —— 点了没反应的按钮比没有更糟', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+
+    expect(albumButtonIfAny()).toBeNull();
+  });
+
+  it('支持时出现按钮；点一下生成成品、把图摆出来，并给出 ShareData 能收的 File', async () => {
+    installShare(true);
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+    await generateAlbum();
+
+    // 图是摆出来了，而且指向一个 blob URL（长按存图的落点）
+    expect(albumImage()).not.toBeNull();
+    expect(albumImage()!.getAttribute('src')).toBe('blob:mock');
+    // 状态条要明确说"已生成"，用户才知道该进行下一步（而不是以为已经存好了）
+    expect(text()).toContain('成品已生成');
+    // 还没点「存储到照片」之前，什么都不该交给系统
+    expect(shared).toHaveLength(0);
+
+    await act(async () => {
+      findButton('存储到照片').click();
+    });
+
+    expect(shared).toHaveLength(1);
+    expect(shared[0]).toHaveLength(1);
+    // 必须是**真的 File**：分享面板只认 File，传 Blob 会在部分浏览器上静默失败
+    expect(shared[0][0]).toBeInstanceOf(File);
+    expect(shared[0][0].name).toMatch(/^Passe_.*\.jpg$/);
+    expect(shared[0][0].type).toBe('image/jpeg');
+  });
+
+  it('点「下载到文件」走的是原来那条下载，文件名与导出面板一致', async () => {
+    installShare(true);
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+    // 文件名要从导出面板读，而面板要有素材才算得出来 —— 所以先喂图
+    const expected = shownFilename();
+    await generateAlbum();
+
+    await act(async () => {
+      findButton('下载到文件').click();
+    });
+
+    expect(downloads).toEqual([expected]);
+    // 只下载、不弹分享面板：两个按钮是两件事
+    expect(shared).toHaveLength(0);
+  });
+
+  it('用户划掉分享面板（AbortError）不算失败，界面不报错', async () => {
+    installShare(true);
+    shareRejects = new DOMException('user aborted', 'AbortError');
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+    await generateAlbum();
+
+    // 先把"生成时的提示确实在"钉死，否则下面那句"被清掉"等于没测
+    expect(text()).toContain('成品已生成');
+
+    await act(async () => {
+      findButton('存储到照片').click();
+    });
+
+    // 划掉 = 什么都没发生：提示收回，且不能冒出失败退路
+    await waitFor(() => !text().includes('成品已生成'), { label: '状态条回到干净状态' });
+    expect(text()).not.toContain(SHARE_FALLBACK_NOTE);
+  });
+
+  it('分享面板真的失败时，给出长按图片这条退路', async () => {
+    installShare(true);
+    shareRejects = new Error('not allowed');
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+    await generateAlbum();
+
+    await act(async () => {
+      findButton('存储到照片').click();
+    });
+
+    await waitFor(() => text().includes(SHARE_FALLBACK_NOTE), { label: '给出长按退路' });
+  });
+
+  it('收起之后图与按钮都消失，并且把那张的 objectURL 撤掉', async () => {
+    installShare(true);
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+    await generateAlbum();
+
+    const revoke = vi.mocked(URL.revokeObjectURL);
+    await act(async () => {
+      findButton('收起').click();
+    });
+
+    expect(albumImage()).toBeNull();
+    expect(albumButtonIfAny()).not.toBeNull();
+    // 成品图是几十兆的位图，收起就得撤 —— 不能挂着等 GC
+    expect(revoke).toHaveBeenCalledWith('blob:mock');
+  });
+});

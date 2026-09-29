@@ -18,7 +18,7 @@ import {
   computeFingerprint,
   formatDiff,
   isMatch,
-  stampTextBand,
+  stampExclusionBand,
   summarizeDiff,
 } from '@/test/visual/fingerprint';
 import { installNativeCanvas } from '@/test/visual/nativeCanvas';
@@ -93,9 +93,16 @@ describe.skipIf(UPDATE !== null)('视觉回归 · 指纹比对', () => {
   }
 });
 
-/* ─────────────────────── 钢印文字带的两道锁 ─────────────────────── */
+/* ────────────── 底边带的三道锁：带内、带沿、带外 ────────────── */
 
-describe('视觉回归 · 钢印文字带不进指纹', () => {
+/*
+ * 底边带（相片下沿到底边、横向整幅）是所有排除区里唯一与**字体无关**的一块，
+ * 也是最容易被顺手改坏的一块 —— 调字体、调字号、改网格分辨率都会碰到它。
+ * 所以三个方向各有一条用例：带内确实没进指纹、钢印确实没越出带沿、
+ * 带外该报的回归确实还能报出来（见下面各条用例自己的注释）。
+ */
+
+describe('视觉回归 · 底边带不进指纹', () => {
   it('换掉机型名与胶卷名，指纹必须逐点一致 —— 证明带内确实没参与比对', () => {
     const base = findScene('baseline-light');
     const renamed = renderScene({
@@ -110,12 +117,27 @@ describe('视觉回归 · 钢印文字带不进指纹', () => {
     const original = fingerprintOf(base);
     const renamedFingerprint = computeFingerprint(base.id, renamed.canvas, renamed.layout);
 
-    // 文字带被排除了，所以换了字也不该有任何一点变化
+    // 底边带整条都被排除了，所以换了字也不该有任何一点变化
     expect(renamedFingerprint.grid.cells).toEqual(original.fingerprint.grid.cells);
     expect(renamedFingerprint.profiles).toEqual(original.fingerprint.profiles);
   });
 
-  it('每个场景的钢印文字都落在排除带内 —— 用真实字体实测宽度，带子不够宽就会失败', () => {
+  /**
+   * 底边带是**自证**的：钢印只要漏进指纹，上面那条「换掉机型名指纹必须不变」就会红。
+   * 但它成立有个前提 —— 钢印整块得落在带内。真越到相片上时，上面那条只会以
+   * "指纹不一致"的形式报警，看不出是"字跑到相片上了"。
+   *
+   * 所以这里正面量一次，而且要量的是**整组**（图标 + 文字），不只是文字的左右缘：
+   * 两者都各自居中画（见 `drawDeboss`），水平占位取更宽的那个。
+   *
+   * 量尺全部取自 `stampGeometry` 与量宽助手，**不在这里重算**。
+   * 这里踩过一次：v1.4.4 把字号 9.5 → 14、字距 2.4 → 3.5 之后，本条用例还按
+   * 9.5 / 2.4 在量 —— 这把尺子比真实值乐观了三分之一，而它照样全绿。
+   * **量尺与算式分家，是"断言还在、守卫已经失效"的典型。**
+   */
+  it('钢印整块落在底边带内 —— 越到相片上，指纹里就会混进随字体变的像素', () => {
+    let checked = 0;
+
     for (const scene of VISUAL_SCENES) {
       const resolved = resolveConfig(scene.config);
       if (!resolved.enableStamp || !resolved.layers.stamp) continue;
@@ -124,30 +146,31 @@ describe('视觉回归 · 钢印文字带不进指纹', () => {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error(`${scene.id}：无 2D 上下文`);
 
-      // 字号、字距、字体串全部取自引擎那一份（`stampGeometry` / 量宽助手）。
-      // 这里踩过一次：v1.4.4 把字号 9.5 → 14、字距 2.4 → 3.5 之后，
-      // 本条用例还按 9.5 / 2.4 在量 —— 于是这把尺子比真实值乐观了三分之一，
-      // 而它照样全绿。**量尺与算式分家，是"断言还在、守卫已经失效"的典型。**
       const geometry = stampGeometry(layout);
       const label = stampLabel(resolved.cameraModel, resolved.filmBrand);
       const inkWidth = measureStampLabelInk(ctx, label, geometry);
+      const band = stampExclusionBand(layout);
 
+      const halfWidth = Math.max(inkWidth, geometry.iconWidth) / 2;
       const centerX = layout.x + layout.w / 2;
-      const band = stampTextBand(layout);
-      const used = (inkWidth / (band.x1 - band.x0)) * 100;
+      // 文字以 middle 基线画在 textY，上下各占约半个字高；图标中心在 iconY
+      const top = geometry.iconY - geometry.iconHeight / 2;
+      const bottom = geometry.textY + geometry.fontSize / 2;
 
       console.log(
-        `[排除带] ${scene.id}：${label.length} 字／墨迹 ${inkWidth.toFixed(0)}px ／` +
-          `带宽 ${(band.x1 - band.x0).toFixed(0)}px → 占 ${used.toFixed(0)}%`,
+        `[钢印带] ${scene.id}：墨迹 ${inkWidth.toFixed(0)}px、组半宽 ${halfWidth.toFixed(0)}px｜` +
+          `纵向 ${top.toFixed(0)}..${bottom.toFixed(0)}（带 ${band.y0.toFixed(0)}..${band.y1.toFixed(0)}）`,
       );
 
-      expect(centerX - inkWidth / 2, `${scene.id}：文字左缘越出排除带`).toBeGreaterThanOrEqual(
-        band.x0,
-      );
-      expect(centerX + inkWidth / 2, `${scene.id}：文字右缘越出排除带`).toBeLessThanOrEqual(
-        band.x1,
-      );
+      expect(top, `${scene.id}：钢印上沿压到相片上了`).toBeGreaterThanOrEqual(band.y0);
+      expect(bottom, `${scene.id}：钢印下沿越出画布`).toBeLessThanOrEqual(band.y1);
+      expect(centerX - halfWidth, `${scene.id}：钢印左缘越出画布`).toBeGreaterThanOrEqual(band.x0);
+      expect(centerX + halfWidth, `${scene.id}：钢印右缘越出画布`).toBeLessThanOrEqual(band.x1);
+
+      checked += 1;
     }
+
+    expect(checked, '没有任何场景带钢印，这条用例等于没跑').toBeGreaterThan(0);
   });
 
   /**
@@ -157,19 +180,20 @@ describe('视觉回归 · 钢印文字带不进指纹', () => {
    * 那条最长的组合必须留在相片宽度内 —— 否则"提供了这个选项"
    * 就等于"提供了一个会把字样压到卡纸上的选项"，而这只有在用户真去点的时候才发作。
    *
-   * ⚠️ 判定线是**相片宽度**（`layout.x .. layout.x + layout.w`），与 `render.test.ts`
-   * 「再长的机型名也留在照片宽度内」是同一条。**不要**改成 `stampTextBand()` 那 25%~75%：
-   * 排除带的宽度只由画布几何决定（与字体无关），墨迹宽度却随字体走，
-   * 而"字体"在 CI 与本机不是同一套 —— 同一份代码，同一行字，CI 上能比本机宽一半。
+   * ⚠️ 判定线只能是**设计量**：相片宽度（`layout.x .. layout.x + layout.w`），
+   * 与 `render.test.ts`「再长的机型名也留在照片宽度内」是同一条。
    *
-   * 实测（44 字，`small-source`）：本机墨迹 173px / 带宽 178px = 97%，贴着边过；
-   * CI 的字体回退（无 Arial/Helvetica，落到 DejaVu 系）墨迹 267px = 150%，直接判死。
-   * 也就是说，拿排除带当设计上限，等于把"CI 装了哪几个字体"变成了验收条件。
+   * 这里踩过一次，值得记住整条链路 —— 当时判定线取的是**指纹排除带**，一个
+   * 宽度只由画布几何决定（与字体无关）的固定框，而被判的墨迹宽度**随字体走**：
+   * 同一行 44 个字，本机墨迹 173px 占带 97%（贴着边过），CI 的字体回退
+   * （无 Arial/Helvetica，落到 DejaVu 系）是 267px = 150%，直接判死。
+   * 等于把"CI 装了哪几个字体"变成了验收条件。
    *
-   * 换成相片宽度后，同一场景：本机墨迹占相片宽 58%、CI 89%（还剩 16px）——
-   * 余量仍然是最紧的一条，因为 `small-source` 的字号本来就被钳位下限顶住了，
-   * 小画布上钢印**本来就**相对偏大。但它紧得有道理：真越过去就是字压到卡纸上，
-   * 那是该报错的。其余八个场景两边都在 70% 以下。
+   * 换成相片宽度之后，余量按字号的实测推：
+   * - 本机：最紧的 `small-source` 还剩 56px（墨迹 188 / 相片宽 300），其余八个场景 ≥ 147px；
+   * - CI：`small-source` 折算下来剩 **8px** —— 因为那一档的字号被钳位下限顶在 8px
+   *   （画布只有 356px 宽），小画布上钢印**本来就**相对偏大，而 21 号字又把它推近了一格。
+   *   这是余量最小的一条；真要越过去就是字压到相纸上，那确实该报错。
    */
   it('候选列表里最长的机型 + 最长的胶卷，在每个场景里都留在相片宽度内', () => {
     const cameraModel = longestOf(CAMERA_PRESETS);
@@ -192,17 +216,14 @@ describe('视觉回归 · 钢印文字带不进指纹', () => {
       const geometry = stampGeometry(layout);
       const inkWidth = measureStampLabelInk(ctx, label, geometry);
       const centerX = layout.x + layout.w / 2;
-      const band = stampTextBand(layout);
 
       const left = centerX - inkWidth / 2;
       const right = centerX + inkWidth / 2;
       const slack = Math.round(Math.min(left - layout.x, layout.x + layout.w - right));
 
-      // 余量按相片宽度算（判定用的那个量），顺带记下占排除带多少 —— 后者只供人眼参考，
-      // 它离 100% 多远取决于跑测试的机器装了哪套字体，不构成验收条件。
       checked.push(
         `${scene.id} 余 ${slack}px／相片宽 ${Math.round(layout.w)}px` +
-          `（占排除带 ${((inkWidth / (band.x1 - band.x0)) * 100).toFixed(0)}%）`,
+          `（墨迹 ${inkWidth.toFixed(0)}px）`,
       );
 
       expect(left, `${scene.id}：最长预设的左缘压到卡纸上`).toBeGreaterThanOrEqual(layout.x);

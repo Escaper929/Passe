@@ -191,7 +191,7 @@ export function writeDiagnostics(
 function formatDiagnosticReport(sceneId: string, diff: FingerprintDiff): string {
   const lines: string[] = [
     `场景：${sceneId}`,
-    `比对点：${diff.comparedPoints}（另有 ${diff.skippedCells} 个网格被钢印文字带排除）`,
+    `比对点：${diff.comparedPoints}（另有 ${diff.skippedCells} 个网格被底边带排除）`,
     summarizeDiff(diff),
     '',
     '不通过原因：',

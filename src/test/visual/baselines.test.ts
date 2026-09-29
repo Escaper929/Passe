@@ -13,7 +13,7 @@ import { PROFILE_SAMPLES, type SceneFingerprint } from './fingerprint';
  *    `"cells"` 是 grid 的最后一个键，却被补了逗号，于是 `],` 紧跟 `},`，
  *    10 份基线一起坏掉。这种坏法很阴：回归测试读基线时直接抛错，
  *    或（更糟）在吞掉异常时表现为"所有场景全都不一致"。
- * 2. **`null` 被写成字符串 `"null"`** —— 被钢印文字带排除的格子会变成 NaN 参与统计。
+ * 2. **`null` 被写成字符串 `"null"`** —— 被底边带排除的格子会变成 NaN 参与统计。
  * 3. **非有限数** —— `toFixed` 把 `NaN` 变成字面量 `NaN`，同样是非法 JSON。
  *
  * 数值上，序列化器**有意**量化到 0.1（见 `baselines.ts` 的 `QUANTUM_DECIMALS`）：
