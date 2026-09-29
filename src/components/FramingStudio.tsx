@@ -445,7 +445,7 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
             <h1 className="text-sm font-medium text-white">画廊装裱调校台 · v{__APP_VERSION__}</h1>
           </div>
           <div className="flex shrink-0 items-center gap-2 text-[11px] text-[#666] md:gap-3">
-            {/* 窄屏上文件名让位给入口按钮：底部状态条里另有外框尺寸，
+            {/* 窄屏上文件名让位给入口按钮：底部状态条里另有预览画布尺寸，
                 而"切到验证台"是这条窄屏上唯一还能挤进来的入口 */}
             {activeItem && activeItem.status === 'ready' ? (
               <span className="hidden max-w-[30ch] truncate sm:inline" title={activeItem.name}>
@@ -549,7 +549,12 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
           {source ? (
             <>
               <span>
-                外框{' '}
+                {/* 这里报的是**预览渲染画布**的像素尺寸（短边钉在 1200 再装裱），
+                    与源图大小无关：换一张 12000px 的扫描件它也一样是 2136 × 1578。
+                    从前它叫「外框」，而导出面板里另有一行「装裱外框」报的是真实
+                    导出尺寸（同一张图是 4746 × 3507）—— 同一个词、差 2.2 倍的数字
+                    摆在同一个界面上，用户拿它做任何判断都会错。改叫「预览画布」。 */}
+                预览画布{' '}
                 <span className="text-[#BBB]">
                   {frameSize.w} × {frameSize.h}
                 </span>

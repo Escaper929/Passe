@@ -169,6 +169,73 @@ describe('画布上限 · 策略', () => {
   });
 });
 
+describe('画布上限 · 触屏判据', () => {
+  /**
+   * 这一组守的是**漏判**。
+   *
+   * 漏判不会抛错、不会警告 —— 它只是安静地退回桌面常量 1.2 亿，然后在真正超限的
+   * 设备上放行一次注定画不出东西的导出，用户拿到一张白图。所以每条都要断言
+   * "画布到底建了没有"（`log` 非空 = 真的探测了），而不是只看返回值 ——
+   * 返回值在探测与不探测两条路上都可能等于原常量，看不出区别。
+   */
+  function stubEnv(coarse: boolean, touchPoints: number) {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: coarse })),
+    );
+    vi.stubGlobal('navigator', { maxTouchPoints: touchPoints });
+  }
+
+  it('粗指针（手机常态）→ 探测', () => {
+    stubEnv(true, 0);
+    const log: number[] = [];
+    expect(computeCanvasLimit({ createCanvas: factoryWithCeiling(SMALL, log) })).toBe(
+      SMALL * CANVAS_SAFETY,
+    );
+    // 试过 SMALL 与 MID 两档：后者失败即停，所以上限落在 SMALL
+    expect(log).toEqual([SMALL, MID]);
+  });
+
+  it('指针报成 fine 但有触点（iPad 接妙控板 / Android 桌面模式）→ 仍然探测', () => {
+    stubEnv(false, 5);
+    const log: number[] = [];
+    expect(computeCanvasLimit({ createCanvas: factoryWithCeiling(SMALL, log) })).toBe(
+      SMALL * CANVAS_SAFETY,
+    );
+    expect(log.length).toBeGreaterThan(0);
+  });
+
+  it('拿不到 matchMedia 但有触点 → 仍然探测', () => {
+    vi.stubGlobal('navigator', { maxTouchPoints: 5 });
+    const log: number[] = [];
+    computeCanvasLimit({ createCanvas: factoryWithCeiling(SMALL, log) });
+    expect(log.length).toBeGreaterThan(0);
+  });
+
+  it('既不是粗指针、也没有触点（桌面）→ 一次都不建，沿用原常量', () => {
+    stubEnv(false, 0);
+    const log: number[] = [];
+    expect(computeCanvasLimit({ createCanvas: factoryWithCeiling(SMALL, log) })).toBe(
+      MAX_CANVAS_PIXELS,
+    );
+    expect(log).toEqual([]);
+  });
+
+  it('maxTouchPoints 缺失（老浏览器）→ 不误判成触屏', () => {
+    // 桌面浏览器为了省一次几十 MB 的分配，值得把这条钉住
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: false })),
+    );
+    vi.stubGlobal('navigator', {});
+    const log: number[] = [];
+    expect(computeCanvasLimit({ createCanvas: factoryWithCeiling(SMALL, log) })).toBe(
+      MAX_CANVAS_PIXELS,
+    );
+    expect(log).toEqual([]);
+  });
+});
+
 describe('画布上限 · 生产入口的缓存', () => {
   /**
    * 注意：这个 jsdom 里**没有** `window.matchMedia`（本仓库的 jsdom 很精简）。

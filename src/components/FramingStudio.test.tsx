@@ -229,10 +229,12 @@ function framedMegapixels(): number {
   return Number(match[1]);
 }
 
-/** 从状态条读出引擎渲染出来的成品画布尺寸。 */
+/** 从状态条读出预览渲染画布的尺寸（短边钉在 1200 的那张，不是导出尺寸）。 */
 function frameBox(): { w: number; h: number } {
-  const match = /外框\s+(\d+)\s*×\s*(\d+)/.exec(text());
-  if (!match) throw new Error('读不到成品外框尺寸');
+  // 状态条上那个数叫「预览画布」而不是「外框」—— 面板里另有一行「装裱外框」
+  // 报的是真实导出尺寸，两者同名会让断言和用户一起读错。
+  const match = /预览画布\s+(\d+)\s*×\s*(\d+)/.exec(text());
+  if (!match) throw new Error('读不到预览画布尺寸');
   return { w: Number(match[1]), h: Number(match[2]) };
 }
 
@@ -379,6 +381,25 @@ describe('调校台 · 空态', () => {
     expect(text()).toContain('装裱外框');
     expect(text()).toContain('portra400');
     expect(exportButton().disabled).toBe(false);
+  });
+});
+
+describe('调校台 · 状态条读数的标签', () => {
+  /**
+   * 状态条与导出面板曾经各自报一个"外框"，数值差 2.2 倍：
+   * 状态条那个是**预览渲染画布**（短边钉在 1200，与源图大小无关 ——
+   * 换一张 12000px 的扫描件它也一样是 2136 × 1578），
+   * 面板里那个才是真实导出尺寸。同一个词、两个数，用户没法分辨在看哪一个。
+   */
+  it('状态条用「预览画布」标注，不与面板的「装裱外框」同名', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+    await waitFor(() => frameBox().w > 0, { label: '预览渲染出成品' });
+
+    const bar = container?.querySelector('footer')?.textContent ?? '';
+    expect(bar).toContain('预览画布');
+    // 「装裱外框」那行住在 aside 里，状态条上不该再出现"外框"三个字
+    expect(bar).not.toContain('外框');
   });
 });
 

@@ -20,6 +20,13 @@
  *    "已经证明自己扛得住 33.5M"的机器上。
  * 3. **只在触屏为主的设备上跑。** 桌面本来就没这个问题，没必要为它多花一次
  *    几十 MB 的分配与一次启动探测。于是桌面行为与从前一字不差。
+ *
+ *    "触屏为主"的判据是 `(pointer: coarse)` **或** `navigator.maxTouchPoints > 0`。
+ *    曾经只看前者，那会漏掉一批真实存在的设备：iPad 接了妙控板或触控笔、
+ *    Android 的「桌面模式」、以及任何把主指针报成 fine 的触屏环境 ——
+ *    它们有触摸屏却匹配不上那条媒体查询。漏判的后果不是"少一层保护"，
+ *    而是**静默退回 1.2 亿的桌面常量**，也就是本文件开头说的那张没有报错的白图。
+ *    多花几十 MB 探一次，远好过在超限设备上放行一次注定画不出来的导出。
  * 4. **探不出来（无 document / 无 2D 上下文 / 首档就不通过）就退回原常量。**
  *    宁可维持旧口径，也不要因为"测不出来"把上限压到 0 —— 那会让整个工具
  *    在任何图上都拒绝导出。
@@ -74,9 +81,27 @@ function defaultCreateCanvas(): HTMLCanvasElement {
   return document.createElement('canvas');
 }
 
+/**
+ * 主指针是否为粗指针（触屏为主）—— 决定要不要探测。
+ *
+ * 两个条件任一成立即算触屏，理由见文件头第 3 条：
+ *
+ * - `(pointer: coarse)`：手机与平板的常态。
+ * - `navigator.maxTouchPoints > 0`：兜住"有触摸屏、但主指针被报成 fine"的环境。
+ *   桌面 Chrome / Safari 上这个值是 0，不会误判；老浏览器上是 `undefined`，
+ *   `?? 0` 之后同样不误判。
+ *
+ * 缺了后者就等于把整条防线挂在一个媒体查询上 —— 匹配不上时不报错、不警告，
+ * 只是安静地退回桌面常量。
+ */
 function defaultIsTouchPrimary(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
-  return window.matchMedia('(pointer: coarse)').matches;
+  if (typeof window === 'undefined') return false;
+
+  if (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) {
+    return true;
+  }
+
+  return (navigator?.maxTouchPoints ?? 0) > 0;
 }
 
 /** 把目标面积折成正方形边长 —— 判据是面积，形状不影响结论。 */

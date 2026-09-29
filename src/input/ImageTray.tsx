@@ -292,7 +292,13 @@ export default function ImageTray({
 
       {compactEmpty ? (
         <p className="rounded border border-[#262628] bg-[#1C1C1E] px-2.5 py-2 text-[10px] leading-relaxed text-[#666]">
-          队列为空。把扫描件拖进左侧视口，或用下面的按钮选择、粘贴。
+          队列为空。
+          {/* 与视口里那块拖放区（FramingStudio 的 md:hidden 分支）保持同一套判据 ——
+              两句话说的是同一件事，只改一边就会自相矛盾。
+              窄屏上两处都不成立：预览在**上方**而不是左侧，而且触屏不发 dragstart、
+              移动端键盘也没有 Cmd+V，拖放与剪贴板都走不到。 */}
+          <span className="md:hidden">点上面的「选择图片」从相册添加。</span>
+          <span className="hidden md:inline">把扫描件拖进左侧视口，或用下面的按钮选择、粘贴。</span>
         </p>
       ) : empty ? (
         <button
@@ -306,12 +312,22 @@ export default function ImageTray({
           }`}
         >
           <span className="text-xs tracking-widest text-[#888] uppercase">
-            {dragging ? '松手即入队' : '选择或拖拽胶片扫描件'}
+            {dragging ? (
+              '松手即入队'
+            ) : (
+              <>
+                <span className="md:hidden">点这里从相册选择</span>
+                <span className="hidden md:inline">选择或拖拽胶片扫描件</span>
+              </>
+            )}
           </span>
           <span className="mt-2 text-[10px] leading-relaxed text-[#555]">
             支持无损 JPEG / PNG / TiFF 与中画幅扫描件
             <br />
-            也可直接 Ctrl / ⌘ + V 粘贴
+            {/* 窄屏上不承诺粘贴与拖拽：触屏不发 dragstart，移动端键盘也没有 Cmd+V。
+                验证台在手机上同样打得开，所以这里和调校台那块的判据要一致 */}
+            <span className="md:hidden">零上传，全部在本地浏览器内完成</span>
+            <span className="hidden md:inline">也可直接 Ctrl / ⌘ + V 粘贴</span>
           </span>
         </button>
       ) : (

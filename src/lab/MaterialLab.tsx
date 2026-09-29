@@ -422,8 +422,14 @@ export default function MaterialLab({
             </button>
             <span className="text-[11px] text-[#666]">{sampleNote}</span>
           </div>
-          <div className="overflow-hidden rounded border border-studio-line bg-black">
-            <canvas ref={loupeCanvasRef} className="block h-auto w-full max-w-[720px]" />
+          {/* 这层黑底要**贴着画布**，不能撑满整行。
+              放大镜显示的是 1:1 采样，所以画布尺寸被钳在 LOUPE_WIDTH × LOUPE_HEIGHT
+              以内（放大只会把材质糊掉，失去"判断像不像真的"这个用途）。而块级容器
+              会占满整行 —— 多出来的部分就是一片纯黑。实测 1440 视口下容器 1008px、
+              画布 720px，右侧 288px 全是这层黑底透出来的，看着像坏了。
+              w-fit + max-w-full：宽屏贴着画布，窄屏仍然能缩进容器。 */}
+          <div className="w-fit max-w-full overflow-hidden rounded border border-studio-line bg-black">
+            <canvas ref={loupeCanvasRef} className="block h-auto max-w-full" />
           </div>
         </section>
 
