@@ -112,11 +112,23 @@ export function drawInsetShadow(
 
 /* ─────────────────────────── 无墨立体钢印 ─────────────────────────── */
 
+/**
+ * 相机线稿在它自己那套 40 单位坐标系里实际占用的尺寸。
+ *
+ * 从下面的路径读出来：x 从 −18 到 19、y 从 −12 到 12（两个取景器凸起
+ * 分别落在 y = −12 与 y = −7 上）。这两个数**必须与路径同步改**，
+ * 否则 `stampGeometry` 报出的净空隙就是假的，而"图标与文字读成一枚印"
+ * 这条构图约束正是靠它守着的。
+ */
+const CAMERA_VECTOR_UNITS = 40;
+const CAMERA_VECTOR_WIDTH_UNITS = 37;
+const CAMERA_VECTOR_HEIGHT_UNITS = 24;
+
 /** 旁轴相机简笔线稿。坐标系以 (x, y) 为锚点，按 size 缩放。 */
 function drawCameraVector(ctx: CanvasRenderingContext2D, x: number, y: number, size: number): void {
   ctx.save();
   ctx.translate(x, y);
-  const s = size / 40;
+  const s = size / CAMERA_VECTOR_UNITS;
   ctx.scale(s, s);
 
   ctx.beginPath();
@@ -203,6 +215,115 @@ export interface DebossOptions {
 }
 
 /**
+ * 钢印的尺寸常量，全部以 1200px 短边为基准（经 `scaledPx` 换算）。
+ *
+ * 这几个数是**一起**定的，单独动一个都会散架：
+ *
+ * - `STAMP_ICON_SIZE`（26 → 38）：相机图标的名义尺寸。它在 `drawCameraVector`
+ *   的 40 单位坐标系里画，实际占到约 0.93 宽 × 0.6 高，所以 38 得到约 23px 高的标记。
+ * - `STAMP_ICON_GAP_RATIO`（新增）：图标中心到文字中线的距离，**按图标尺寸取比例**。
+ *   原来这两处都写 26，看起来"图标 26、间距 26"很整齐，实际是个坑：
+ *   图标只有 0.6 × 26 = 15.6 高，于是间距里剩下 26 − 10 ≈ 16px，**比 9.5px 的字还高**。
+ *   图标和文字就此读成两个不相干的记号，而不是一个钢印。按比例给 0.68 之后
+ *   间距约 9px，两者才咬合成一体。
+ * - `STAMP_FONT_SIZE`（9.5 → 14）：整块钢印原先只占画布宽的 8.8%，
+ *   而画布在界面上还会再缩到约 0.37 倍显示 —— 文字落到 3.5 个 CSS 像素，
+ *   读不出来。用户的反馈正是"太小、太不明显"。
+ * - `STAMP_TRACKING`（2.4 → 3.5）：字距与字号同步放大，保持约 0.25 的字距/字号比。
+ *
+ * 改这几个数之后必须重建视觉回归基线（`npm run visual:update`）——
+ * 它们直接决定底边带上那一片像素。
+ */
+const STAMP_ICON_SIZE = 38;
+const STAMP_ICON_GAP_RATIO = 0.68;
+const STAMP_FONT_SIZE = 14;
+const STAMP_TRACKING = 3.5;
+
+/** 钢印线宽与图标尺寸的比。放大图标而不加粗，图标就成了灰线。 */
+const STAMP_STROKE_RATIO = 1.25;
+
+/**
+ * 钢印默认下压深度的**唯一出处**。
+ *
+ * 从前 `1.2` 分别写在五处（引擎默认配置、界面初始配方、出厂预设、
+ * 以及两个界面里给滑杆用的 `?? 1.2` 兜底）。于是"改默认值"这件事
+ * 在代码里根本没有一个能改对的地方：改了引擎的，滑杆显示的仍是旧值。
+ * 抬高默认值（配合整块钢印放大 1.46 倍那一次改动）时合并到这里。
+ *
+ * 取值 1.5 的依据：位移在预览尺度上是像素级的，1.2 时钢印的棱几乎贴在一起、
+ * 读成一片灰；2.2 往上则开始像套印错位而不是压痕。1.5 处在
+ * 出厂预设区间（1.0 ~ 1.6）的偏上位置，与炭黑展厅（深色卡纸需要更强反光）同档。
+ */
+export const DEFAULT_STAMP_DEPTH = 1.5;
+
+/** 钢印用的字体栈。逐字排版，不依赖任何字体特性（见 `drawTrackedText`）。 */
+const STAMP_FONT_STACK = 'Inter, -apple-system, BlinkMacSystemFont, sans-serif';
+
+/**
+ * 钢印一块印的全部几何量。**唯一的一次计算在这里**。
+ *
+ * 抽出来是为了让"图标与文字读成一枚印"这条构图约束能被测试直接断言 ——
+ * 从前这套算式只写在 `drawDeboss` 里，测试要验证它就得抄一遍，
+ * 而抄一遍就必然分叉（当初"图标 26、间距也 26"正是这么写错的）。
+ */
+export interface StampGeometry {
+  /** 图标的名义尺寸（喂给 `drawCameraVector` 的 40 单位坐标系） */
+  iconSize: number;
+  /** 图标线稿的**实际**占位，比名义尺寸小得多 */
+  iconWidth: number;
+  iconHeight: number;
+  /** 图标中心的 y 坐标 */
+  iconY: number;
+  /** 文字中线的 y 坐标 */
+  textY: number;
+  /**
+   * 图标下沿到文字上沿之间的**净空隙**（px）。
+   *
+   * 有意忽略线宽带来的半个笔画的差 —— 于是它是一个上界：
+   * 真实空隙只会更小。断言"净空隙 < 字高"因此是偏保守的。
+   */
+  netGap: number;
+  fontSize: number;
+  tracking: number;
+  lineWidth: number;
+  /** 三层光效之间沿 225° 的位移距离 */
+  offset: number;
+}
+
+/**
+ * 由版式算出钢印的全部几何量。纯函数，同样的 layout 必得同样的结果。
+ *
+ * `depth` 默认取 `DEFAULT_STAMP_DEPTH`，测试与预览因此走同一条路径。
+ */
+export function stampGeometry(layout: Layout, depth: number = DEFAULT_STAMP_DEPTH): StampGeometry {
+  const { canvasW, canvasH, bottomOffset, scale } = layout;
+
+  const iconSize = scaledPx(STAMP_ICON_SIZE, canvasW, canvasH, 20);
+  const fontSize = scaledPx(STAMP_FONT_SIZE, canvasW, canvasH, 8);
+  const iconWidth = (iconSize * CAMERA_VECTOR_WIDTH_UNITS) / CAMERA_VECTOR_UNITS;
+  const iconHeight = (iconSize * CAMERA_VECTOR_HEIGHT_UNITS) / CAMERA_VECTOR_UNITS;
+
+  const iconY = Math.round(layout.y + layout.h + bottomOffset * 0.36);
+  // 间距按图标尺寸取比例 —— 写死成常数的话，图标一改大小构图就散（见常量区注释）
+  const textY = iconY + Math.round(iconSize * STAMP_ICON_GAP_RATIO);
+  const netGap = textY - fontSize / 2 - (iconY + iconHeight / 2);
+
+  return {
+    iconSize,
+    iconWidth,
+    iconHeight,
+    iconY,
+    textY,
+    netGap,
+    fontSize,
+    tracking: STAMP_TRACKING * scale,
+    lineWidth: Math.max(1, STAMP_STROKE_RATIO * scale),
+    // 不取整：位移一旦被舍成整数，滑杆在预览尺度上就废掉了大半（见 drawDeboss）
+    offset: Math.max(0.5, depth * scale),
+  };
+}
+
+/**
  * 底部无墨立体钢印（Blind Deboss）。
  *
  * 光学构成（开发指南 §1）：左上槽底阴影 + 右下截光边缘反光 + 凹槽内部纸浆轻微压暗。
@@ -220,16 +341,13 @@ export function drawDeboss(
   const { cameraModel, filmBrand } = options;
   if (!cameraModel && !filmBrand) return;
 
-  const { canvasW, canvasH, bottomOffset, scale } = layout;
   const { surface } = options;
 
   const centerX = layout.x + layout.w / 2;
-  const iconSize = scaledPx(26, canvasW, canvasH, 20);
-  const fontSize = scaledPx(9.5, canvasW, canvasH, 8);
-  const iconY = Math.round(layout.y + layout.h + bottomOffset * 0.36);
-  const textY = iconY + scaledPx(26, canvasW, canvasH, 20);
-  const tracking = 2.4 * scale;
-  const lineWidth = Math.max(1, 1.1 * scale);
+  const { iconSize, fontSize, iconY, textY, tracking, lineWidth, offset } = stampGeometry(
+    layout,
+    options.stampDepth,
+  );
 
   const label = [cameraModel, filmBrand].filter(Boolean).join('   /   ').toUpperCase();
 
@@ -247,14 +365,24 @@ export function drawDeboss(
     drawCameraVector(ctx, centerX, iconY, iconSize);
 
     ctx.save();
-    ctx.font = `600 ${fontSize}px Inter, -apple-system, BlinkMacSystemFont, sans-serif`;
+    ctx.font = `600 ${fontSize}px ${STAMP_FONT_STACK}`;
     drawTrackedText(ctx, label, centerX, textY, tracking);
     ctx.restore();
   };
 
   // 光源来自左上 (225°)：阴影棱朝左上偏移，反光棱朝右下偏移
   const angle = Math.PI * 0.75;
-  const offset = scaledPx(options.stampDepth, canvasW, canvasH, 0.8);
+  /**
+   * 位移取 `stampGeometry` 那一份，**这里刻意不做 `scaledPx` 的取整**。
+   *
+   * 位移只有连续变化，"钢印下压深度"滑杆才有意义。一旦取整，在预览尺度
+   * （scale ≈ 1.315）上 1.2 / 1.5 / 1.8 会被舍成同一个 2px —— 实测这三个档位
+   * 渲染出来的像素**逐点相同**，用户把滑杆从中间拖到偏高，画面一点不动。
+   *
+   * 而位移最后还要乘 (∓0.707, ±0.707)（225° 方向），本来就不是整数，
+   * 取整既没换来锐利、也没换来一致，只是把滑杆废掉了大半。
+   * （`lineWidth` 同样是不取整的写法，这里与它保持一致。）
+   */
   const dx = Math.cos(angle) * offset;
   const dy = -Math.sin(angle) * offset;
 

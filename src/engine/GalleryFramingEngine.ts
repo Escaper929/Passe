@@ -1,6 +1,6 @@
 import { resolveCanvasLimit } from './canvasLimit';
 import { calculateLayout, type Layout } from './layout';
-import { drawBevel, drawDeboss, drawInsetShadow } from './materials';
+import { drawBevel, drawDeboss, drawInsetShadow, DEFAULT_STAMP_DEPTH } from './materials';
 import { applyPaperTexture, type PaperTextureMode } from './noise';
 import { analyzeSurface } from './palette';
 import type {
@@ -24,7 +24,7 @@ export const DEFAULT_CONFIG: ResolvedFrameConfig = {
   enableStamp: true,
   cameraModel: 'LEICA M6',
   filmBrand: 'PORTRA 400',
-  stampDepth: 1.2,
+  stampDepth: DEFAULT_STAMP_DEPTH,
   layers: {
     mat: true,
     paperTexture: true,

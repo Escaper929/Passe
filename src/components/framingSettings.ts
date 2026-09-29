@@ -18,6 +18,7 @@
 import { useCallback, useState } from 'react';
 
 import type { FrameConfig, LayerToggles } from '@/engine/types';
+import { DEFAULT_STAMP_DEPTH } from '@/engine/materials';
 
 import { DEFAULT_EXPORT_FORMAT_ID, DEFAULT_QUALITY, type ExportFormatId } from './exportFormat';
 import { DEFAULT_EXPORT_SIZE_ID } from './exportPlan';
@@ -36,7 +37,7 @@ export const INITIAL_CONFIG: FrameConfig = {
   paperTextureIntensity: 0.04,
   bevelWidth: 2.5,
   insetShadowBlur: 6,
-  stampDepth: 1.2,
+  stampDepth: DEFAULT_STAMP_DEPTH,
   enableStamp: true,
   cameraModel: 'LEICA M6',
   filmBrand: 'KODAK PORTRA 400',

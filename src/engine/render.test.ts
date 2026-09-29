@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { MAX_CANVAS_PIXELS } from '@/engine/canvasLimit';
 import { GalleryFramingEngine, isBlankCanvas } from '@/engine/GalleryFramingEngine';
-import { drawTrackedText } from '@/engine/materials';
+import { drawTrackedText, stampGeometry } from '@/engine/materials';
 import type { FrameConfig, RenderSource } from '@/engine/types';
 
 /**
@@ -343,6 +343,217 @@ describe('无墨立体钢印', () => {
     console.log('[钢印] 炭黑反差 =', deviation.toFixed(3));
 
     expect(deviation).toBeGreaterThan(1);
+  });
+});
+
+/** 逐层比对的差值。`rows[y]` 是第 y 行的变化像素数，下标即行号。 */
+interface LayerDiff {
+  rows: number[];
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+  changed: number;
+  strong: number;
+  maxDelta: number;
+}
+
+/**
+ * 把"有这一层"与"没有这一层"两张画布逐像素比对，顺便给出变化区域的包围盒与逐行分布。
+ *
+ * 判据取 `delta > 2` 而不是 `> 0`：渲染本身是确定性的（同一份配置渲两次逐点相同，
+ * 已有控制实验确认），但两层叠印的抗锯齿边缘会落在 1~2 的量化误差里 ——
+ * 卡在 0 上会把整块卡纸的渐变也算成"变化"。
+ */
+function diffLayers(canvas: HTMLCanvasElement, baseline: HTMLCanvasElement): LayerDiff {
+  const a = canvas.getContext('2d');
+  const b = baseline.getContext('2d');
+  if (!a || !b) throw new Error('读取像素失败：无 2D 上下文');
+  if (canvas.width !== baseline.width || canvas.height !== baseline.height) {
+    throw new Error('两张画布尺寸不一致，无法逐像素比对');
+  }
+
+  const dataA = a.getImageData(0, 0, canvas.width, canvas.height).data;
+  const dataB = b.getImageData(0, 0, baseline.width, baseline.height).data;
+
+  const diff: LayerDiff = {
+    rows: new Array<number>(canvas.height).fill(0),
+    x0: canvas.width,
+    x1: -1,
+    y0: canvas.height,
+    y1: -1,
+    changed: 0,
+    strong: 0,
+    maxDelta: 0,
+  };
+
+  for (let i = 0; i < dataA.length; i += 4) {
+    const delta = Math.max(
+      Math.abs(dataA[i] - dataB[i]),
+      Math.abs(dataA[i + 1] - dataB[i + 1]),
+      Math.abs(dataA[i + 2] - dataB[i + 2]),
+    );
+    if (delta <= 2) continue;
+
+    const pixel = i / 4;
+    const x = pixel % canvas.width;
+    const y = Math.floor(pixel / canvas.width);
+
+    diff.changed += 1;
+    diff.rows[y] += 1;
+    if (delta > diff.maxDelta) diff.maxDelta = delta;
+    if (delta > 8) diff.strong += 1;
+    if (x < diff.x0) diff.x0 = x;
+    if (x > diff.x1) diff.x1 = x;
+    if (y < diff.y0) diff.y0 = y;
+    if (y > diff.y1) diff.y1 = y;
+  }
+
+  return diff;
+}
+
+/** 一段时间内最长的连续空白行数 —— 用来判断一枚印中间有没有断成两截。 */
+function longestEmptyRun(rows: readonly number[], from: number, to: number): number {
+  let run = 0;
+  let longest = 0;
+  for (let y = from; y <= to; y += 1) {
+    run = rows[y] === 0 ? run + 1 : 0;
+    if (run > longest) longest = run;
+  }
+  return longest;
+}
+
+/**
+ * 钢印的尺寸与构图。
+ *
+ * 这一组是"钢印太小、太不明显"那轮反馈留下的护栏。那条反馈没有给数字，
+ * 所以先把抱怨量成指标 —— 墨迹占画布宽多少、图标与文字之间的空隙是字高的几倍 ——
+ * 再对着指标改，改完拿同一套指标复核。这几个断言就是那套指标本身。
+ */
+describe('无墨立体钢印 · 尺寸与构图', () => {
+  const photo = createPhoto();
+
+  /**
+   * 只关钢印的基线。
+   *
+   * 踩过一次：顺手把纸纹/倒角/内阴影一起关掉当基线，diff 圈出来的是**整块卡纸**
+   * （变化占画布 32.9%），看起来像"钢印盖满了全图"。
+   * 基线必须只差被测的那一层，否则量到的是别的材质。
+   */
+  const WITHOUT_STAMP: Partial<FrameConfig> = {
+    matColor: '#F8F7F3',
+    cameraModel: 'LEICA M6',
+    filmBrand: 'KODAK PORTRA 400',
+    layers: { paperTexture: false, bevel: false, insetShadow: false, stamp: false },
+  };
+  const WITH_STAMP: Partial<FrameConfig> = {
+    ...WITHOUT_STAMP,
+    layers: { ...WITHOUT_STAMP.layers, stamp: true },
+  };
+
+  it('图标与文字之间的净空隙小于字高 —— 两者读成一枚印，而不是两枚记号', () => {
+    const layout = GalleryFramingEngine.layout(photo, {});
+    const geometry = stampGeometry(layout);
+
+    console.log(
+      `[钢印构图] 图标名义 ${geometry.iconSize}、实际占位 ${geometry.iconWidth.toFixed(1)}×` +
+        `${geometry.iconHeight.toFixed(1)}；文字 ${geometry.fontSize}px；` +
+        `净空隙 ${geometry.netGap.toFixed(1)}px = 字高的 ${(geometry.netGap / geometry.fontSize).toFixed(2)} 倍`,
+    );
+
+    // 根因就在这里：原先"图标 26、间距也 26"看起来整齐，实际图标只有 0.6 × 26 高，
+    // 间距里剩下的一半比 9.5px 的字还高 —— 图标与文字被读成两个互不相干的记号。
+    expect(geometry.netGap).toBeLessThan(geometry.fontSize);
+    // 但也不能糊到一起
+    expect(geometry.netGap).toBeGreaterThan(0);
+  });
+
+  it('像素上也是一枚连着的印：图标与文字之间没有空白横行', () => {
+    const layout = GalleryFramingEngine.layout(photo, {});
+    const geometry = stampGeometry(layout);
+
+    const diff = diffLayers(
+      GalleryFramingEngine.render(photo, WITH_STAMP),
+      GalleryFramingEngine.render(photo, WITHOUT_STAMP),
+    );
+    const gap = longestEmptyRun(diff.rows, diff.y0, diff.y1);
+
+    console.log(
+      `[钢印像素] 包围盒 ${diff.x1 - diff.x0 + 1}×${diff.y1 - diff.y0 + 1}，` +
+        `最长空白横行 ${gap}px（字高 ${geometry.fontSize}px）`,
+    );
+
+    // 上面那条几何断言依赖 CAMERA_VECTOR_*_UNITS 与路径同步。这里是它的兜底：
+    // 就算那几个常量跟路径走散了，只要中间真的裂出一条比字还高的空白，
+    // 这条就会红 —— 而它量的正是用户实际会看到的东西。
+    expect(gap).toBeLessThan(geometry.fontSize);
+  });
+
+  it('墨迹宽度不低于画布宽的 11% —— 低于这个数，界面上缩到三分之一就只剩几个 CSS 像素', () => {
+    const preview = GalleryFramingEngine.render(photo, WITH_STAMP);
+    const diff = diffLayers(preview, GalleryFramingEngine.render(photo, WITHOUT_STAMP));
+    const widthRatio = (diff.x1 - diff.x0 + 1) / preview.width;
+
+    console.log(
+      `[钢印尺寸] 墨迹宽 ${diff.x1 - diff.x0 + 1}px / 画布 ${preview.width}px = ${(widthRatio * 100).toFixed(1)}%`,
+    );
+
+    // 改之前是 8.8%，改成 38 / 14 / 3.5 之后是 12.9%。11% 这条线卡在中间，
+    // 既是"确实变大了"的证据，也不至于把尺寸钉死到某一个像素。
+    expect(widthRatio).toBeGreaterThan(0.11);
+  });
+
+  it('再长的机型名也留在照片宽度内、也留在底边带内', () => {
+    const longModel = 'HASSELBLAD 503CW';
+    const longFilm = 'KODAK EKTACHROME E100';
+
+    const layout = GalleryFramingEngine.layout(photo, {});
+    const canvas = GalleryFramingEngine.render(photo, {
+      ...WITH_STAMP,
+      cameraModel: longModel,
+      filmBrand: longFilm,
+    });
+    const diff = diffLayers(
+      canvas,
+      GalleryFramingEngine.render(photo, {
+        ...WITHOUT_STAMP,
+        cameraModel: longModel,
+        filmBrand: longFilm,
+      }),
+    );
+
+    const label = `${longModel}   /   ${longFilm}`;
+    console.log(
+      `[钢印长名] ${label.length} 字 → 墨迹 x${diff.x0}..${diff.x1}` +
+        `（照片 x${layout.x}..${layout.x + layout.w}），下沿距画布底 ${canvas.height - diff.y1 - 1}px`,
+    );
+
+    // 钢印放大之后最容易出的事故：文字比照片还宽，压在卡纸上。
+    expect(diff.x0).toBeGreaterThanOrEqual(layout.x);
+    expect(diff.x1).toBeLessThanOrEqual(layout.x + layout.w);
+    expect(diff.y1).toBeLessThan(canvas.height);
+  });
+
+  it('下压深度逐档可辨 —— 滑杆不能是死的', () => {
+    const depths = [1.2, 1.5, 1.8];
+    const counts = depths.map(
+      (stampDepth) =>
+        diffLayers(
+          GalleryFramingEngine.render(photo, { ...WITH_STAMP, stampDepth }),
+          GalleryFramingEngine.render(photo, { ...WITHOUT_STAMP, stampDepth }),
+        ).changed,
+    );
+
+    console.log(`[钢印深度] ${depths.map((d, i) => `${d} → ${counts[i]}px`).join('，')}`);
+
+    // 回归的是这一条：`scaledPx(options.stampDepth, …, 0.8)` 把位移舍成了整数，
+    // 预览尺度（scale ≈ 1.31）上 1.2 / 1.5 / 1.8 都落到同一个 2px，
+    // 三个档位渲出来**逐点相同** —— 用户把滑杆拖过去，画面一点不动。
+    for (let i = 1; i < counts.length; i += 1) {
+      expect(counts[i]).not.toBe(counts[i - 1]);
+    }
+    // 更深的档位应当压出更多变化，而不是只在数值上换了个数
+    expect(counts[counts.length - 1]).toBeGreaterThan(counts[0]);
   });
 });
 

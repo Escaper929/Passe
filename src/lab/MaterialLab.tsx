@@ -5,6 +5,7 @@ import { ChoiceGrid, Section, Slider, ToggleRow } from '@/components/controls';
 import type { FramingSettingsApi } from '@/components/framingSettings';
 import { fitPreview, PREVIEW_INSET } from '@/components/previewFit';
 import { GalleryFramingEngine } from '@/engine/GalleryFramingEngine';
+import { DEFAULT_STAMP_DEPTH } from '@/engine/materials';
 import type { PaperTextureMode } from '@/engine/noise';
 import { analyzeSurface, MATBOARD_PRESETS } from '@/engine/palette';
 import { createPreviewSource, hasImageFile } from '@/engine/source';
@@ -570,11 +571,11 @@ export default function MaterialLab({
             />
             <Slider
               label="钢印下压深度"
-              value={config.stampDepth ?? 1.2}
-              min={0.4}
+              value={config.stampDepth ?? DEFAULT_STAMP_DEPTH}
+              min={0.2}
               max={3}
               step={0.1}
-              display={(config.stampDepth ?? 1.2).toFixed(1)}
+              display={(config.stampDepth ?? DEFAULT_STAMP_DEPTH).toFixed(1)}
               onChange={(value) => patchConfig({ stampDepth: value })}
             />
           </div>

@@ -14,6 +14,7 @@
  */
 
 import type { FrameConfig, LayerToggles } from '@/engine/types';
+import { DEFAULT_STAMP_DEPTH } from '@/engine/materials';
 
 /** 预设保存的样式部分。机型与胶卷刻意排除在外。 */
 export type PresetStyle = Omit<FrameConfig, 'cameraModel' | 'filmBrand'>;
@@ -52,7 +53,7 @@ export const BUILTIN_PRESETS: readonly StudioPreset[] = [
       paperTextureIntensity: 0.04,
       bevelWidth: 2.5,
       insetShadowBlur: 6,
-      stampDepth: 1.2,
+      stampDepth: DEFAULT_STAMP_DEPTH,
       enableStamp: true,
     },
   },

@@ -23,6 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ChoiceGrid, Section, Slider, TextField, ToggleRow } from '@/components/controls';
 import { GalleryFramingEngine, saveBlob } from '@/engine/GalleryFramingEngine';
+import { DEFAULT_STAMP_DEPTH } from '@/engine/materials';
 import { analyzeSurface, MATBOARD_PRESETS } from '@/engine/palette';
 import { createPreviewSource, hasImageFile } from '@/engine/source';
 import type { RenderSource } from '@/engine/types';
@@ -741,11 +742,11 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
               />
               <Slider
                 label="下压深度"
-                value={config.stampDepth ?? 1.2}
+                value={config.stampDepth ?? DEFAULT_STAMP_DEPTH}
                 min={0.2}
                 max={3}
                 step={0.1}
-                display={`${(config.stampDepth ?? 1.2).toFixed(1)}px @1200`}
+                display={`${(config.stampDepth ?? DEFAULT_STAMP_DEPTH).toFixed(1)}px @1200`}
                 onChange={(value) => patchConfig({ stampDepth: value })}
               />
             </div>
