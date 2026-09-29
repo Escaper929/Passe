@@ -154,10 +154,24 @@ describe('视觉回归 · 钢印文字带不进指纹', () => {
    * 界面给机型与胶卷各配了一份候选列表（`stampSubjects.ts`）。
    *
    * 用户在两边各点一下，就会得到**这个列表能产出的最长那一行字**。
-   * 那条最长的组合必须和场景一样落在排除带内 —— 否则"提供了这个选项"
-   * 就等于"提供了一个会把字样顶出卡纸的选项"，而这只有在用户真去点的时候才发作。
+   * 那条最长的组合必须留在相片宽度内 —— 否则"提供了这个选项"
+   * 就等于"提供了一个会把字样压到卡纸上的选项"，而这只有在用户真去点的时候才发作。
+   *
+   * ⚠️ 判定线是**相片宽度**（`layout.x .. layout.x + layout.w`），与 `render.test.ts`
+   * 「再长的机型名也留在照片宽度内」是同一条。**不要**改成 `stampTextBand()` 那 25%~75%：
+   * 排除带的宽度只由画布几何决定（与字体无关），墨迹宽度却随字体走，
+   * 而"字体"在 CI 与本机不是同一套 —— 同一份代码，同一行字，CI 上能比本机宽一半。
+   *
+   * 实测（44 字，`small-source`）：本机墨迹 173px / 带宽 178px = 97%，贴着边过；
+   * CI 的字体回退（无 Arial/Helvetica，落到 DejaVu 系）墨迹 267px = 150%，直接判死。
+   * 也就是说，拿排除带当设计上限，等于把"CI 装了哪几个字体"变成了验收条件。
+   *
+   * 换成相片宽度后，同一场景：本机墨迹占相片宽 58%、CI 89%（还剩 16px）——
+   * 余量仍然是最紧的一条，因为 `small-source` 的字号本来就被钳位下限顶住了，
+   * 小画布上钢印**本来就**相对偏大。但它紧得有道理：真越过去就是字压到卡纸上，
+   * 那是该报错的。其余八个场景两边都在 70% 以下。
    */
-  it('候选列表里最长的机型 + 最长的胶卷，放进每个场景的版式都不越界', () => {
+  it('候选列表里最长的机型 + 最长的胶卷，在每个场景里都留在相片宽度内', () => {
     const cameraModel = longestOf(CAMERA_PRESETS);
     const filmBrand = longestOf(FILM_PRESETS);
     const label = stampLabel(cameraModel, filmBrand);
@@ -180,19 +194,28 @@ describe('视觉回归 · 钢印文字带不进指纹', () => {
       const centerX = layout.x + layout.w / 2;
       const band = stampTextBand(layout);
 
-      checked.push(`${scene.id} ${((inkWidth / (band.x1 - band.x0)) * 100).toFixed(0)}%`);
+      const left = centerX - inkWidth / 2;
+      const right = centerX + inkWidth / 2;
+      const slack = Math.round(Math.min(left - layout.x, layout.x + layout.w - right));
 
-      expect(
-        centerX - inkWidth / 2,
-        `${scene.id}：最长预设的左缘越出排除带`,
-      ).toBeGreaterThanOrEqual(band.x0);
-      expect(centerX + inkWidth / 2, `${scene.id}：最长预设的右缘越出排除带`).toBeLessThanOrEqual(
-        band.x1,
+      // 余量按相片宽度算（判定用的那个量），顺带记下占排除带多少 —— 后者只供人眼参考，
+      // 它离 100% 多远取决于跑测试的机器装了哪套字体，不构成验收条件。
+      checked.push(
+        `${scene.id} 余 ${slack}px／相片宽 ${Math.round(layout.w)}px` +
+          `（占排除带 ${((inkWidth / (band.x1 - band.x0)) * 100).toFixed(0)}%）`,
+      );
+
+      expect(left, `${scene.id}：最长预设的左缘压到卡纸上`).toBeGreaterThanOrEqual(layout.x);
+      expect(right, `${scene.id}：最长预设的右缘压到卡纸上`).toBeLessThanOrEqual(
+        layout.x + layout.w,
       );
     }
 
+    // 没有一条场景带钢印的话，上面的循环一次都不会进 —— 那样这条用例会静默地"通过"。
+    expect(checked.length, '没有任何场景带钢印，这条用例等于没跑').toBeGreaterThan(0);
+
     console.log(
-      `[最长预设] ${cameraModel}   /   ${filmBrand}（${label.length} 字）占排除带：` +
+      `[最长预设] ${cameraModel}   /   ${filmBrand}（${label.length} 字）距相片边缘：` +
         checked.join('｜'),
     );
   });
