@@ -834,6 +834,16 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
                   {plan.framedW} × {plan.framedH}（{plan.budget.megapixels.toFixed(1)}MP）
                 </dd>
               </div>
+              {/* 提前说出这台机器的天花板，而不是等用户选了 8K 才被拦下。
+                  数值与守卫同源（都由同一个画布上限反查），所以这行说"装得下"
+                  和守卫真的放行不会打架。桌面上通常不出现 —— 那里报的是兜底常量，
+                  不是任何设备的限制（见 exportPlan.ts 的 ceilingLongSide）。 */}
+              {plan.ceilingLongSide !== null ? (
+                <div className="flex justify-between gap-3">
+                  <dt className="shrink-0">本机导出上限</dt>
+                  <dd className="truncate text-[#BBB]">≈ {plan.ceilingLongSide}px 长边</dd>
+                </div>
+              ) : null}
               <div className="flex justify-between">
                 <dt>预计峰值</dt>
                 <dd className="text-[#BBB]">{formatMemory(plan.budget.estimatedBytes)}</dd>

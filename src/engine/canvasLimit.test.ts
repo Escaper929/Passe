@@ -6,9 +6,11 @@ import {
   MAX_CANVAS_PIXELS,
   canRenderOnCanvas,
   computeCanvasLimit,
+  computeCanvasLimitInfo,
   probeMaxCanvasPixels,
   resetCanvasLimitCache,
   resolveCanvasLimit,
+  resolveCanvasLimitInfo,
 } from './canvasLimit';
 
 /**
@@ -166,6 +168,69 @@ describe('画布上限 · 策略', () => {
       createCanvas: factoryWithCeiling(Number.MAX_SAFE_INTEGER),
     });
     expect(limit).toBeLessThanOrEqual(MAX_CANVAS_PIXELS);
+  });
+});
+
+describe('画布上限 · 上限的来源', () => {
+  /**
+   * 这一组守的是**界面说不说那句话**。
+   *
+   * 上限数值前面已经钉过了；这里钉的是"它是不是这台机器的特性"。
+   * 说错的代价是导出面板上挂一句没有信息量的话（桌面报"上限 ≈ 10700px"），
+   * 或者更糟 —— 把兜底常量当成设备限制，让用户以为换台设备能解决。
+   */
+  it('桌面不探测：沿用兜底常量，且不声称是设备上限', () => {
+    const info = computeCanvasLimitInfo({
+      isTouchPrimary: () => false,
+      createCanvas: factoryWithCeiling(Number.MAX_SAFE_INTEGER),
+    });
+    expect(info).toEqual({ limit: MAX_CANVAS_PIXELS, isDeviceProbed: false });
+  });
+
+  it('探测确实压低了上限 → 标记为设备上限', () => {
+    const info = computeCanvasLimitInfo({
+      isTouchPrimary: () => true,
+      createCanvas: factoryWithCeiling(SMALL),
+    });
+    expect(info).toEqual({ limit: SMALL * CANVAS_SAFETY, isDeviceProbed: true });
+  });
+
+  it('探不出来（退回兜底常量）→ 不标记，否则界面会报一个并非设备限制的数', () => {
+    const info = computeCanvasLimitInfo({
+      isTouchPrimary: () => true,
+      createCanvas: factoryWithoutContext(),
+    });
+    expect(info).toEqual({ limit: MAX_CANVAS_PIXELS, isDeviceProbed: false });
+  });
+
+  it('扛得住全部候选的机型也照样标记 —— 打折之后必然低于兜底常量', () => {
+    // 最大的候选 67.1M × 0.5 = 33.5M，仍远小于桌面的 120M。也就是说
+    // "探测成功"与"上限被压低"在当前常量下是同一件事，没有"探了但没探出限制"
+    // 这种中间状态。这条钉住的正是这个等价关系 —— 它一旦不成立
+    // （比如以后把某个候选调得很大），导出面板上那句话的含义就变了。
+    const info = computeCanvasLimitInfo({
+      isTouchPrimary: () => true,
+      createCanvas: factoryWithCeiling(Number.MAX_SAFE_INTEGER),
+    });
+    expect(info.limit).toBe(LARGE * CANVAS_SAFETY);
+    expect(info.limit).toBeLessThan(MAX_CANVAS_PIXELS);
+    expect(info.isDeviceProbed).toBe(true);
+  });
+
+  it('数值与来源来自同一次探测 —— 取两次不会多建一张画布', () => {
+    // 缓存里存的是 (数值, 来源) 这一对，不是只存数值。
+    // 分开取会在缓存被清掉后自己再触发一次几百 MB 的分配。
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: true })),
+    );
+    const created = vi.spyOn(document, 'createElement');
+
+    const first = resolveCanvasLimitInfo();
+    const second = resolveCanvasLimitInfo();
+
+    expect(second).toEqual(first);
+    expect(created).toHaveBeenCalledTimes(1);
   });
 });
 

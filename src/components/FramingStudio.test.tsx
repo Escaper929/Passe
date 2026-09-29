@@ -911,6 +911,50 @@ describe('调校台 · 内存守卫拦下导出', () => {
   });
 });
 
+describe('调校台 · 本机导出上限', () => {
+  /**
+   * 这一组守的是"提前说出来"。
+   *
+   * 上限被压低的设备（手机 / 平板）上，用户不该等到选了 8K、按下导出才被告知
+   * 这台机器装不下。面板上常驻一行说清楚，代价是零 —— 不改任何行为，
+   * 只是把守卫本来就会给出的结论提前讲。
+   *
+   * 注入 `renderLimit` 走的是与真机探测完全相同的一条路径：
+   * `hasDeviceCeiling` 的判据就是"生效上限严格小于桌面兜底常量"，
+   * 而真机探测成功之后必然满足它。
+   */
+  it('上限被压低时提前报出"最多能装多大的源图"', async () => {
+    dims = SMALL;
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} renderLimit={TIGHT_LIMIT} />);
+    await seedImage(latestQueue!);
+
+    expect(planRow('本机导出上限')).toMatch(/^≈ \d+px 长边$/);
+  });
+
+  it('它与"一键修正"给的不是同一个数：上限是可行线，修正值留了余量', async () => {
+    dims = SMALL;
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} renderLimit={TIGHT_LIMIT} />);
+    await seedImage(latestQueue!);
+
+    // 两个数会同时出现在面板上，所以必须让人读得出它们的区别：
+    // 上限是"再多一点就导不出来"，修正值是"压到这里就能顺畅干活"。
+    const ceiling = Number(/≈ (\d+)px/.exec(planRow('本机导出上限'))?.[1]);
+    const suggested = Number(/压到长边 (\d+)px 导出/.exec(text())?.[1]);
+
+    expect(ceiling).toBeGreaterThan(suggested);
+  });
+
+  it('桌面兜底上限下不出现这一行 —— 那是兜底常量，不是任何设备的限制', async () => {
+    dims = SMALL;
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+    await seedImage(latestQueue!);
+
+    // 先确认面板确实渲染了（否则"读不到那句话"可能是因为整个面板都没出来）
+    expect(planRow('输出')).toBe('3000 × 2000');
+    expect(text()).not.toContain('本机导出上限');
+  });
+});
+
 describe('调校台 · 批量导出', () => {
   it('队列里三张一次导完，每张都写盘、都释放', async () => {
     await mount(<Harness onQueue={(q) => (latestQueue = q)} />);

@@ -7,6 +7,7 @@ import {
   assessFrame,
   assessResidentMemory,
   BYTES_PER_PIXEL,
+  ceilingSourceLongSide,
   defaultResidentLimit,
   formatMemory,
   HEAVY_LOAD,
@@ -133,6 +134,58 @@ describe('内存守卫 · 建议降采样尺寸', () => {
     const loose = suggestMaxDimension(W, H, {}, 1.2e8) as number;
     const tight = suggestMaxDimension(W, H, {}, 4e7) as number;
     expect(tight).toBeLessThan(loose);
+  });
+});
+
+describe('内存守卫 · 本机上限（源图长边口径）', () => {
+  /** 标准 iPhone 的探测结果：单画布 16,777,216 px，打折后一半 */
+  const PHONE_LIMIT = 4096 * 4096 * 0.5;
+  /** 3:2 横向扫描件 */
+  const W = 4000;
+  const H = 2667;
+
+  it('它就是"还能导出"这条线：报出来的长边能导出，再多 1px 就被拦下', () => {
+    const ceiling = ceilingSourceLongSide(W, H, {}, PHONE_LIMIT) as number;
+    expect(ceiling).not.toBeNull();
+    expect(scaledLevel(W, H, ceiling, PHONE_LIMIT)).not.toBe('blocked');
+    expect(scaledLevel(W, H, ceiling + 1, PHONE_LIMIT)).toBe('blocked');
+  });
+
+  it('比"建议尺寸"更大 —— 那个要的是余量，这个要的是可行', () => {
+    // 两处同时出现在导出面板上：上限行说"最多能装多大"，
+    // 一键修正按钮给的是"压到这里就能顺畅导出"。搞成同一个数会让其中一条失去意义。
+    const ceiling = ceilingSourceLongSide(W, H, {}, PHONE_LIMIT) as number;
+    const suggestion = suggestMaxDimension(W, H, {}, PHONE_LIMIT) as number;
+    expect(suggestion).toBeLessThan(ceiling);
+  });
+
+  it('当前这张图很小，上限也不该塌成它自己的尺寸', () => {
+    // suggestMaxDimension 在这种情况下会返回源图自己的长边（那是它的正确行为：
+    // 不该建议放大）；但"这台机器装得下多大"是设备的属性，与手上这张图无关。
+    const ceiling = ceilingSourceLongSide(800, 533, {}, PHONE_LIMIT) as number;
+    expect(ceiling).toBeGreaterThan(2000);
+  });
+
+  it('同样的比例下，结果与源图尺寸无关（只差取整）', () => {
+    const small = ceilingSourceLongSide(800, 533, {}, PHONE_LIMIT) as number;
+    const large = ceilingSourceLongSide(4000, 2667, {}, PHONE_LIMIT) as number;
+    expect(Math.abs(small - large)).toBeLessThanOrEqual(2);
+  });
+
+  it('上限越小，装得下的长边越小 —— 手机上就是比桌面窄一大截', () => {
+    const phone = ceilingSourceLongSide(W, H, {}, PHONE_LIMIT) as number;
+    const desktop = ceilingSourceLongSide(W, H, {}, MAX_CANVAS_PIXELS) as number;
+    expect(phone).toBeLessThan(desktop);
+  });
+
+  it('边距越大，装得下的长边越小 —— 算的是装裱后的外框，不是源图本身', () => {
+    const tight = ceilingSourceLongSide(W, H, { marginRatio: 0.14 }, PHONE_LIMIT) as number;
+    const loose = ceilingSourceLongSide(W, H, { marginRatio: 0.3 }, PHONE_LIMIT) as number;
+    expect(loose).toBeLessThan(tight);
+  });
+
+  it('连下限都装不下时返回 null，让调用方去调边距而不是缩图', () => {
+    expect(ceilingSourceLongSide(W, H, { marginRatio: 40 }, 2e7)).toBeNull();
   });
 });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { MAX_CANVAS_PIXELS } from '@/engine/canvasLimit';
 import { assessFrame } from '@/input/budget';
 
 import {
@@ -252,5 +253,90 @@ describe('导出方案 · 外框尺寸与守卫联动', () => {
     });
     // 源图只有 4000，所以文件名必须写 4000，写 8192 就是骗人
     expect(plan.filename).toBe('Passe_M6_portra400_4000px.jpg');
+  });
+});
+
+describe('导出方案 · 本机导出上限', () => {
+  /** 标准 iPhone 的探测结果：单画布 16,777,216 px，打折后一半 */
+  const PHONE_LIMIT = 4096 * 4096 * 0.5;
+
+  it('报出来的数就是"再大一点就导出不了"的那条线', () => {
+    // 面板上那句话唯一的承诺就是"这台机器装得下到这个数"。它必须与守卫同源 ——
+    // 各算各的，迟早会出现"面板说装得下、按下导出却被拦下"。
+    const ceiling = buildExportPlan({
+      source: SOURCE,
+      config: {},
+      sizeId: 'original',
+      limit: PHONE_LIMIT,
+    }).ceilingLongSide as number;
+
+    expect(ceiling).toBeGreaterThan(0);
+    expect(ceiling).toBeLessThan(SOURCE.width);
+
+    const atCeiling = buildExportPlan({
+      source: SOURCE,
+      config: {},
+      sizeId: 'original',
+      overrideMaxDimension: ceiling,
+      limit: PHONE_LIMIT,
+    });
+    expect(atCeiling.canExport).toBe(true);
+
+    const oneMore = buildExportPlan({
+      source: SOURCE,
+      config: {},
+      sizeId: 'original',
+      overrideMaxDimension: ceiling + 1,
+      limit: PHONE_LIMIT,
+    });
+    expect(oneMore.canExport).toBe(false);
+  });
+
+  it('上限被压低时就标记出来 —— 界面据此决定要不要说这句话', () => {
+    const plan = buildExportPlan({
+      source: SOURCE,
+      config: {},
+      sizeId: '8k',
+      limit: PHONE_LIMIT,
+    });
+    expect(plan.hasDeviceCeiling).toBe(true);
+    expect(plan.ceilingLongSide).not.toBeNull();
+  });
+
+  it('桌面兜底上限 + 普通源图 → 什么都不报：那是兜底值，不是任何设备的限制', () => {
+    const plan = buildExportPlan({
+      source: { width: 3000, height: 2000 },
+      config: {},
+      sizeId: '8k',
+      limit: MAX_CANVAS_PIXELS,
+    });
+    expect(plan.hasDeviceCeiling).toBe(false);
+    expect(plan.ceilingLongSide).toBeNull();
+  });
+
+  it('源图自己越过了上限 → 即使没有设备上限也报（桌面上选「原始」的大画幅）', () => {
+    const plan = buildExportPlan({
+      source: { width: 30000, height: 20000 },
+      config: {},
+      sizeId: 'original',
+      limit: MAX_CANVAS_PIXELS,
+    });
+    expect(plan.hasDeviceCeiling).toBe(false);
+    expect(plan.ceilingLongSide).not.toBeNull();
+    expect(plan.ceilingLongSide as number).toBeLessThan(30000);
+    expect(plan.canExport).toBe(false);
+  });
+
+  it('上限是设备的属性：换个尺寸预设它不该跟着动', () => {
+    // 用户从 8K 切到 2K，"这台机器装得下多大"和预设无关。
+    // 要是它跟着预设变，那句话就变成了"这个预设能装多下"，完全是另一回事。
+    const eightK = buildExportPlan({
+      source: SOURCE,
+      config: {},
+      sizeId: '8k',
+      limit: PHONE_LIMIT,
+    });
+    const twoK = buildExportPlan({ source: SOURCE, config: {}, sizeId: '2k', limit: PHONE_LIMIT });
+    expect(eightK.ceilingLongSide).toBe(twoK.ceilingLongSide);
   });
 });

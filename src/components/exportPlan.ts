@@ -6,8 +6,18 @@
  * 而导出恰恰是最不能出错的一步：用户等了几十秒，然后标签页崩了。
  */
 
+import {
+  MAX_CANVAS_PIXELS,
+  resolveCanvasLimit,
+  resolveCanvasLimitInfo,
+} from '@/engine/canvasLimit';
 import type { FrameConfig } from '@/engine/types';
-import { assessFrame, suggestMaxDimension, type RenderBudget } from '@/input/budget';
+import {
+  assessFrame,
+  ceilingSourceLongSide,
+  suggestMaxDimension,
+  type RenderBudget,
+} from '@/input/budget';
 
 import {
   DEFAULT_EXPORT_FORMAT_ID,
@@ -101,6 +111,25 @@ export interface ExportPlan {
    * 点完修正之后不该还留着一条黄色警告。
    */
   suggestedMaxDimension: number | null;
+  /**
+   * 生效的画布上限是不是**真被这台机器压低**了（严格小于桌面兜底常量）。
+   *
+   * 用来区分"这台上限是设备的特性"和"这只是个兜底值"。后者（桌面、以及所有
+   * 探测不出结果的设备）报出来是噪音 —— 它既不是设备的限制，也没有可执行的动作。
+   */
+  hasDeviceCeiling: boolean;
+  /**
+   * 「本机导出上限」：源图长边最多到多少像素仍不会被守卫拦下。
+   *
+   * 报给用户的数，**必须与守卫同源**——它就是拿同一个 `limit` 反查出来的，
+   * 所以"面板说装得下"与"守卫真的放行"不会打架。
+   *
+   * 为 null 有两种情形，对界面是同一个动作（不渲染那一行）：
+   * - 上限只是兜底常量、且当前这张图本来就在上限之内 —— 没什么可说的；
+   * - 连 `floor` 都装不下（边距比例离谱）—— 这时该建议调边距，
+   *   报一个上限数字反而误导。
+   */
+  ceilingLongSide: number | null;
   /** 实际生效的格式档 id */
   formatId: string;
   /**
@@ -139,6 +168,18 @@ export interface BuildExportPlanInput {
 export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
   const { source, config, sizeId, limit } = input;
 
+  /**
+   * 上限只解析一次，再喂给下面所有判定（守卫、建议尺寸、本机上限）。
+   * 各处分别去取默认值，在缓存一致时结果相同 —— 但那是巧合，不是保证。
+   */
+  const canvasLimit = limit ?? resolveCanvasLimit();
+  /**
+   * 注入的上限本身就低于兜底常量，这已经是"有人把它压下来了"的证据；
+   * 没注入时才去问探测结果（否则界面要多探测一次，那是几百 MB）。
+   */
+  const hasDeviceCeiling =
+    limit === undefined ? resolveCanvasLimitInfo().isDeviceProbed : limit < MAX_CANVAS_PIXELS;
+
   const override = input.overrideMaxDimension ?? null;
   const preset = EXPORT_SIZES.find((option) => option.id === sizeId) ?? EXPORT_SIZES[0];
   const requested = override ?? preset.maxDimension;
@@ -154,8 +195,24 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
   const outputW = Math.max(1, Math.round(source.width * ratio));
   const outputH = Math.max(1, Math.round(source.height * ratio));
 
-  const budget = assessFrame(outputW, outputH, config, limit);
+  const budget = assessFrame(outputW, outputH, config, canvasLimit);
   const canExport = budget.level !== 'blocked';
+
+  const ceiling = ceilingSourceLongSide(source.width, source.height, config, canvasLimit);
+  /**
+   * 只在"这句话有用"时留下它。两种情况下有用：
+   *
+   * 1. 上限是设备特性 —— 手机用户需要提前知道这台机器装不下更大的图，
+   *    而不是等到选了 8K 才被拦下；
+   * 2. 当前这张源图已经越过上限 —— 桌面也有这种情形（选了"原始"的大画幅扫描件），
+   *    此时他马上就会看到拦截提示，提前一行说清楚更好。
+   *
+   * 都不满足就不出：桌面 + 中等源图，这一行说"上限 ≈ 10700px"纯属噪音。
+   */
+  const ceilingLongSide =
+    ceiling !== null && (hasDeviceCeiling || Math.max(source.width, source.height) > ceiling)
+      ? ceiling
+      : null;
 
   return {
     sizeId: override === null ? preset.id : 'custom',
@@ -170,7 +227,9 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
     // 建议值以源图长边为口径 —— maxDimension 正是这个含义，直接可用
     suggestedMaxDimension: canExport
       ? null
-      : suggestMaxDimension(source.width, source.height, config, limit),
+      : suggestMaxDimension(source.width, source.height, config, canvasLimit),
+    hasDeviceCeiling,
+    ceilingLongSide,
     formatId: format.id,
     mimeType: format.mimeType,
     quality,

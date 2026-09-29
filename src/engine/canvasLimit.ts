@@ -152,20 +152,44 @@ export function probeMaxCanvasPixels(deps: CanvasLimitDeps = {}): number {
   return passed;
 }
 
+export interface CanvasLimitInfo {
+  /** 生效的单画布像素上限 */
+  limit: number;
+  /**
+   * 这个上限是不是**真被这台机器压低了**（严格小于桌面兜底常量）。
+   *
+   * 界面靠它决定"本机上限"值不值得说出口。桌面以及所有探测不出结果的设备
+   * 拿到的都是 `MAX_CANVAS_PIXELS` —— 那是个兜底值，不是任何设备的特性，
+   * 报在导出面板上只是噪音。只有当探测确实把上限压了下来，
+   * "这台机器装不下更大的图"才是一条用户需要提前知道的信息。
+   */
+  isDeviceProbed: boolean;
+}
+
 /**
  * 上限策略（纯函数）：桌面不探测；触屏设备探测后打折；探不出来退回原常量。
  *
  * 单独拆出来是为了可注入依赖 —— 测试用假画布走完整个策略，
  * 不必真的去分配几百 MB。
  */
-export function computeCanvasLimit(deps: CanvasLimitDeps = {}): number {
+export function computeCanvasLimitInfo(deps: CanvasLimitDeps = {}): CanvasLimitInfo {
+  /** 兜底情形：没探测、探不出来 —— 两者都沿用桌面常量，且都不构成"设备上限" */
+  const fallback: CanvasLimitInfo = { limit: MAX_CANVAS_PIXELS, isDeviceProbed: false };
+
   const isTouchPrimary = deps.isTouchPrimary ?? defaultIsTouchPrimary;
-  if (!isTouchPrimary()) return MAX_CANVAS_PIXELS;
+  if (!isTouchPrimary()) return fallback;
 
   const probed = probeMaxCanvasPixels(deps);
-  if (probed <= 0) return MAX_CANVAS_PIXELS;
+  if (probed <= 0) return fallback;
 
-  return Math.min(probed * CANVAS_SAFETY, MAX_CANVAS_PIXELS);
+  const limit = Math.min(probed * CANVAS_SAFETY, MAX_CANVAS_PIXELS);
+  // 探通了、但结果并不比兜底常量更严（扛得住全部候选的机型），
+  // 同样不构成"这台机器装不下"的信息。
+  return { limit, isDeviceProbed: limit < MAX_CANVAS_PIXELS };
+}
+
+export function computeCanvasLimit(deps: CanvasLimitDeps = {}): number {
+  return computeCanvasLimitInfo(deps).limit;
 }
 
 /**
@@ -174,11 +198,24 @@ export function computeCanvasLimit(deps: CanvasLimitDeps = {}): number {
  * 探测要真分配内存，所以整个进程只跑一次并缓存 —— 调用点在
  * `assessFrame` 的默认参数上，而那是每次拖动滑杆都会走到的路径。
  */
-let cached: number | null = null;
+let cached: Readonly<CanvasLimitInfo> | null = null;
+
+/**
+ * 连**来源**一起回报。
+ *
+ * 数值与"它是不是设备探测的结果"必须是同一次探测的产物 ——
+ * 分开取会让界面拿着旧常量配上新的 `isDeviceProbed`，
+ * 或者在缓存被清掉之后自己再触发一次几百 MB 的分配。
+ *
+ * 返回的是缓存对象本身（`Readonly` 挡掉改写）：调用方只读，不要另存引用当共享状态用。
+ */
+export function resolveCanvasLimitInfo(): Readonly<CanvasLimitInfo> {
+  if (cached === null) cached = computeCanvasLimitInfo();
+  return cached;
+}
 
 export function resolveCanvasLimit(): number {
-  if (cached === null) cached = computeCanvasLimit();
-  return cached;
+  return resolveCanvasLimitInfo().limit;
 }
 
 /** 只给测试用：清掉缓存，让下一次调用重新探测。 */
