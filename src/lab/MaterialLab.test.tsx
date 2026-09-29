@@ -130,9 +130,14 @@ describe('验证台 · 放大镜的未取样态', () => {
 
     // 画布尺寸被真正设过（默认是 300×150）—— 这一条才是"ref 还活着"的证据。
     // 只断言占位消失是防不住的：占位会正常消失，而画布一片空白。
+    //
+    // **要等的是被断言的那个量本身。** 这里踩过一次竞态：占位消失只是 state 变了，
+    // 画布尺寸可能还落在紧随其后的一次 effect 里 —— CPU 忙的时候断言会跑到它前面，
+    // 报出 "expected 300 to be greater than 300" 这种看不懂的错。
+    // 实测整套用例跑七次就会偶发一次，属于必须修掉的那类不稳定。
     const loupe = loupeCanvas();
     expect(loupe).not.toBeNull();
-    expect(loupe!.width).toBeGreaterThan(300);
+    await waitFor(() => loupe!.width > 300, { label: '放大镜画布被设过尺寸' });
     expect(loupe!.height).toBeGreaterThan(150);
 
     // 状态条会报出这一笔的规模，说明走完了"重解原图 → 渲染 → 取样"整条路
