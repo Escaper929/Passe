@@ -1,0 +1,21 @@
+# 行尾符归一化。
+#
+# 为什么需要这个文件：仓库里没有它，行尾就由每台机器各自的 core.autocrlf 决定。
+# 而 Windows 上 Git for Windows 的默认值就是 true，于是检出时把所有文本文件
+# 变成 CRLF；Prettier 配的是 endOfLine: "lf"（见 .prettierrc.json），
+# 于是 `npm run format:check` 会在**干净克隆**上报 67 个文件格式错误 ——
+# 而 CI 跑在 Linux 上（autocrlf 默认关）永远是绿的，两边对不上。
+# 这类"本地红了线上绿"的差异最难查，因为改的是同一份代码。
+#
+# 钉在这里之后，行尾与开发者的 Git 全局配置无关，克隆出来就是 LF。
+* text=auto eol=lf
+
+# 文本文件里也应该按文本处理的例外，无需声明。
+# 以下为真正的二进制：显式标 -text，避免被当文本做行尾转换而损坏。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
