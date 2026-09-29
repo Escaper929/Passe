@@ -176,3 +176,65 @@ export function TextField({
     </label>
   );
 }
+
+/**
+ * 一段文本字段的候选值列表。
+ *
+ * 给"相机机型""胶卷型号"这类**该自由填写、但绝大多数人只会填那几个值**的字段用：
+ * 点一下等于替用户敲一遍字，填完仍然可以随便改 —— 它不接管那个字段，
+ * 只是省掉打字与拼错。
+ *
+ * 两个细节是刻意的：
+ *
+ * 1. **限高可滚，不折叠。** 16 条一列排开会把侧栏撑得很长，藏进"展开"又让
+ *    这个功能没人发现。给一个约 5 行高的滚动区，既一眼看得出有什么、
+ *    也不会把底下的滑杆挤到看不见。
+ * 2. **高亮按大小写不敏感比。** 用户手敲了 `leica m6`，钢印印出来仍是大写
+ *    （`drawDeboss` 会 `toUpperCase()`），所以按原样比会让"明明填的就是这个"
+ *    的那一条不亮 —— 看起来像没生效。
+ */
+export function PresetChips({
+  label,
+  options,
+  value,
+  onPick,
+}: {
+  label: string;
+  options: readonly string[];
+  /** 该字段当前的值（可能是用户手敲的任意大小写） */
+  value: string;
+  onPick: (next: string) => void;
+}) {
+  const current = value.trim().toUpperCase();
+
+  return (
+    <div className="mt-1.5">
+      {/* 条数标在右侧：列表是限高可滚的，只露 5 行 —— 不报总数的话
+          用户不会知道后面还有 11 条。写法与 Section 的「标题 + 补充」一致。 */}
+      <span className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="text-[10px] tracking-wider text-[#555] uppercase">{label}</span>
+        <span className="text-[10px] text-[#444]">{options.length} 个</span>
+      </span>
+      <div className="max-h-[138px] space-y-1 overflow-y-auto pr-1">
+        {options.map((option) => {
+          const active = current !== '' && current === option;
+          return (
+            <button
+              key={option}
+              type="button"
+              onClick={() => onPick(option)}
+              title={active ? '正在用这一条' : `填入「${option}」`}
+              className={`block w-full truncate rounded border px-2 py-1 text-left text-[11px] transition-colors ${
+                active
+                  ? 'border-white bg-[#28282A] text-white'
+                  : 'border-[#262628] bg-[#1C1C1E] text-[#888] hover:border-[#38383A] hover:text-white'
+              }`}
+            >
+              {option}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

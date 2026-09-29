@@ -21,7 +21,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { ChoiceGrid, Section, Slider, TextField, ToggleRow } from '@/components/controls';
+import {
+  ChoiceGrid,
+  PresetChips,
+  Section,
+  Slider,
+  TextField,
+  ToggleRow,
+} from '@/components/controls';
 import { GalleryFramingEngine, saveBlob } from '@/engine/GalleryFramingEngine';
 import { DEFAULT_STAMP_DEPTH } from '@/engine/materials';
 import { analyzeSurface, MATBOARD_PRESETS } from '@/engine/palette';
@@ -64,6 +71,7 @@ import {
   saveUserPresets,
   type StudioPreset,
 } from './presets';
+import { CAMERA_PRESETS, FILM_PRESETS } from './stampSubjects';
 
 /**
  * 实时预览的短边上限。
@@ -734,11 +742,23 @@ export function FramingStudio({ queue, settings, onOpenLab, renderLimit }: Frami
                 value={config.cameraModel ?? ''}
                 onChange={(next) => patchConfig({ cameraModel: next })}
               />
+              <PresetChips
+                label="常用机型 · 点一下填入"
+                options={CAMERA_PRESETS}
+                value={config.cameraModel ?? ''}
+                onPick={(next) => patchConfig({ cameraModel: next })}
+              />
               <TextField
                 label="胶卷型号"
                 placeholder="如 KODAK PORTRA 400"
                 value={config.filmBrand ?? ''}
                 onChange={(next) => patchConfig({ filmBrand: next })}
+              />
+              <PresetChips
+                label="常用胶卷 · 点一下填入"
+                options={FILM_PRESETS}
+                value={config.filmBrand ?? ''}
+                onPick={(next) => patchConfig({ filmBrand: next })}
               />
               <Slider
                 label="下压深度"

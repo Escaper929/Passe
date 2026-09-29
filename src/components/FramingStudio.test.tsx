@@ -1313,3 +1313,124 @@ describe('调校台 · 与验证台共享装裱设置', () => {
     expect(findButton('材质验证台').disabled).toBe(false);
   });
 });
+
+/* ───────────────── 钢印的候选值：常用机型 / 常用胶卷 ───────────────── */
+
+/**
+ * 候选值按钮。按**完整文本**找，不用 `includes` ——
+ * `LEICA M3` 是别的条目的前缀、`KODAK PORTRA 400` 也出现在导出文件名里，
+ * 用子串找会静默命中错的那个。
+ */
+function chip(label: string): HTMLButtonElement {
+  const buttons = Array.from(container?.querySelectorAll('button') ?? []);
+  const match = buttons.find((button) => (button.textContent ?? '').trim() === label);
+  if (!match) throw new Error(`找不到候选值按钮：${label}`);
+  return match as HTMLButtonElement;
+}
+
+function chipIfAny(label: string): HTMLButtonElement | null {
+  const buttons = Array.from(container?.querySelectorAll('button') ?? []);
+  return (
+    (buttons.find((button) => (button.textContent ?? '').trim() === label) as
+      HTMLButtonElement | undefined) ?? null
+  );
+}
+
+/** 钢印那两个文本框。按 placeholder 找，比按出现顺序取稳。 */
+function stampField(placeholder: string): HTMLInputElement {
+  const input = container?.querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`);
+  if (!input) throw new Error(`找不到输入框：${placeholder}`);
+  return input;
+}
+
+/**
+ * 一条候选值是不是"选中"状态。
+ *
+ * 按 class token 判，不用 `toContain`：这个 className 里还有 `border-[#262628]`
+ * 这类近邻串，子串包含会给出静默的假结论。
+ */
+function isChosen(label: string): boolean {
+  return chip(label).className.split(/\s+/).includes('border-white');
+}
+
+/** 往受控文本框里打字。受控 input 必须绕到原型上的原生 setter（见 dragSlider）。 */
+async function typeIntoField(input: HTMLInputElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (!setter) throw new Error('拿不到 value 的原生 setter');
+  await act(async () => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+describe('调校台 · 钢印的候选值', () => {
+  it('两个列表都在，且默认值那两条是选中状态', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+
+    // 初始配方是 LEICA M6 / KODAK PORTRA 400（framingSettings.INITIAL_CONFIG）
+    expect(isChosen('LEICA M6')).toBe(true);
+    expect(isChosen('KODAK PORTRA 400')).toBe(true);
+    // 别的条目不该跟着亮
+    expect(isChosen('NIKON FM2')).toBe(false);
+    expect(isChosen('ILFORD HP5 PLUS')).toBe(false);
+  });
+
+  it('点一下就把值填进对应的框，并且只动那一个字段', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+
+    await act(async () => {
+      chip('HASSELBLAD 500CM').click();
+    });
+    expect(stampField('如 LEICA M6').value).toBe('HASSELBLAD 500CM');
+    // 胶卷没被带着改 —— 两个列表各管一个字段
+    expect(stampField('如 KODAK PORTRA 400').value).toBe('KODAK PORTRA 400');
+    expect(isChosen('HASSELBLAD 500CM')).toBe(true);
+    expect(isChosen('LEICA M6')).toBe(false);
+
+    await act(async () => {
+      chip('CINESTILL 800T').click();
+    });
+    expect(stampField('如 KODAK PORTRA 400').value).toBe('CINESTILL 800T');
+    expect(stampField('如 LEICA M6').value).toBe('HASSELBLAD 500CM');
+  });
+
+  it('点完还能接着手改 —— 列表是候选，不是把它变成下拉框', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+
+    await act(async () => {
+      chip('CONTAX T2').click();
+    });
+    await typeIntoField(stampField('如 LEICA M6'), 'CONTAX T2 TITANIUM');
+
+    expect(stampField('如 LEICA M6').value).toBe('CONTAX T2 TITANIUM');
+    // 改成一个列表里没有的值之后，不该还有条目亮着
+    expect(isChosen('CONTAX T2')).toBe(false);
+  });
+
+  it('手敲成小写时，对应那条仍然高亮 —— 钢印印出来本来就是大写', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+
+    await typeIntoField(stampField('如 LEICA M6'), 'leica m6');
+
+    // 按原样比会让"明明填的就是这个"的那条不亮，看起来像没生效
+    expect(isChosen('LEICA M6')).toBe(true);
+  });
+
+  it('关掉钢印开关时两个列表都不出现', async () => {
+    await mount(<Harness onQueue={(q) => (latestQueue = q)} />);
+
+    expect(chipIfAny('LEICA M6')).not.toBeNull();
+
+    await act(async () => {
+      // 钢印那一行的开关
+      const toggle = Array.from(container?.querySelectorAll('input[type=checkbox]') ?? []).find(
+        (box) => (box.closest('label')?.textContent ?? '').includes('无墨立体钢印'),
+      ) as HTMLInputElement | undefined;
+      if (!toggle) throw new Error('找不到钢印开关');
+      toggle.click();
+    });
+
+    expect(text()).not.toContain('常用机型');
+    expect(chipIfAny('LEICA M6')).toBeNull();
+  });
+});

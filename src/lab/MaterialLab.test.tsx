@@ -145,3 +145,49 @@ describe('验证台 · 放大镜的未取样态', () => {
     expect(text()).toContain('scaleFactor');
   });
 });
+
+/**
+ * 验证台里也得有同一份候选值。
+ *
+ * 两个视图共用一套控件（`controls.tsx`）与一份数据（`stampSubjects.ts`）,
+ * 就是为了别出现"调校台有这个列表、验证台没有"。这条用例守的是**接线**：
+ * 组件写了、数据导了，但某一侧忘了挂上去，界面上是看不出来的。
+ */
+describe('验证台 · 钢印的候选值', () => {
+  /** 按完整文本找候选值按钮 —— 子串找会命中错的那条（见调校台同名的注意）。 */
+  function chipInLab(label: string): HTMLButtonElement | null {
+    const buttons = Array.from(container?.querySelectorAll('button') ?? []);
+    return (
+      (buttons.find((button) => (button.textContent ?? '').trim() === label) as
+        HTMLButtonElement | undefined) ?? null
+    );
+  }
+
+  it('两个列表都在这一侧出现', async () => {
+    await mount();
+
+    expect(text()).toContain('常用机型');
+    expect(text()).toContain('常用胶卷');
+    expect(chipInLab('LEICA M6')).not.toBeNull();
+    expect(chipInLab('KODAK PORTRA 400')).not.toBeNull();
+  });
+
+  it('点一下就能改掉这一侧的机型与胶卷', async () => {
+    await mount();
+
+    const before = container?.querySelector<HTMLInputElement>('input[placeholder^="相机机型"]');
+    expect(before?.value).toBe('LEICA M6');
+
+    await act(async () => {
+      chipInLab('ROLLEIFLEX 2.8F')?.click();
+    });
+
+    // 同一个字段，两个视图共用一份配方（framingSettings.ts）—— 值应当就地变了
+    const after = container?.querySelector<HTMLInputElement>('input[placeholder^="相机机型"]');
+    expect(after?.value).toBe('ROLLEIFLEX 2.8F');
+    // 胶卷没被带着改
+    expect(
+      container?.querySelector<HTMLInputElement>('input[placeholder^="胶卷型号"]')?.value,
+    ).toBe('KODAK PORTRA 400');
+  });
+});

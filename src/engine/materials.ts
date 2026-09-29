@@ -324,6 +324,47 @@ export function stampGeometry(layout: Layout, depth: number = DEFAULT_STAMP_DEPT
 }
 
 /**
+ * 钢印上那一行字。**标签怎么拼只有这一处**。
+ *
+ * 抽出来是因为除了 `drawDeboss`，还有两处需要知道"字到底是什么"：
+ * 视觉回归那条"文字必须落在排除带内"的锁，以及预设列表"最长组合会不会越界"
+ * 的检查。它们各自拼一遍的话，改分隔符就会有一处悄悄量错。
+ */
+export function stampLabel(cameraModel?: string, filmBrand?: string): string {
+  return [cameraModel, filmBrand].filter(Boolean).join('   /   ').toUpperCase();
+}
+
+/**
+ * 把钢印的字体装到 2D 上下文上。
+ *
+ * 字体串（含 `600` 这个字重）**只在这里出现一次** —— 量宽与真正绘制必须用
+ * 同一套字形，否则"量出来 384px"和"画出来 400px"这种分歧不会有任何报错。
+ */
+export function applyStampFont(ctx: CanvasRenderingContext2D, fontSize: number): void {
+  ctx.font = `600 ${fontSize}px ${STAMP_FONT_STACK}`;
+}
+
+/**
+ * 量出这一行字的墨迹宽度（px）。
+ *
+ * 与 `drawTrackedText` 同源：逐字度量，**末尾那个字距不计**——
+ * 居中按墨迹范围算，算进尾随空隙就会整体左偏（见 `drawTrackedText` 的注释）。
+ */
+export function measureStampLabelInk(
+  ctx: CanvasRenderingContext2D,
+  label: string,
+  geometry: Pick<StampGeometry, 'fontSize' | 'tracking'>,
+): number {
+  applyStampFont(ctx, geometry.fontSize);
+  const chars = Array.from(label);
+  if (chars.length === 0) return 0;
+  return (
+    chars.reduce((sum, ch) => sum + ctx.measureText(ch).width, 0) +
+    geometry.tracking * (chars.length - 1)
+  );
+}
+
+/**
  * 底部无墨立体钢印（Blind Deboss）。
  *
  * 光学构成（开发指南 §1）：左上槽底阴影 + 右下截光边缘反光 + 凹槽内部纸浆轻微压暗。
@@ -349,7 +390,7 @@ export function drawDeboss(
     options.stampDepth,
   );
 
-  const label = [cameraModel, filmBrand].filter(Boolean).join('   /   ').toUpperCase();
+  const label = stampLabel(cameraModel, filmBrand);
 
   // 三层光效的不透明度按卡纸明暗切换。浅色卡纸沿用开发指南 §3 的原始取值，
   // 深色卡纸收阴影、强反光 —— 否则炭黑展厅上的钢印整层读不出来。
@@ -365,7 +406,7 @@ export function drawDeboss(
     drawCameraVector(ctx, centerX, iconY, iconSize);
 
     ctx.save();
-    ctx.font = `600 ${fontSize}px ${STAMP_FONT_STACK}`;
+    applyStampFont(ctx, fontSize);
     drawTrackedText(ctx, label, centerX, textY, tracking);
     ctx.restore();
   };

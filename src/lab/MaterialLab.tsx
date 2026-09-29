@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ASPECT_OPTIONS } from '@/components/aspects';
-import { ChoiceGrid, Section, Slider, ToggleRow } from '@/components/controls';
+import { ChoiceGrid, PresetChips, Section, Slider, ToggleRow } from '@/components/controls';
 import type { FramingSettingsApi } from '@/components/framingSettings';
 import { fitPreview, PREVIEW_INSET } from '@/components/previewFit';
+import { CAMERA_PRESETS, FILM_PRESETS } from '@/components/stampSubjects';
 import { GalleryFramingEngine } from '@/engine/GalleryFramingEngine';
 import { DEFAULT_STAMP_DEPTH } from '@/engine/materials';
 import type { PaperTextureMode } from '@/engine/noise';
@@ -590,12 +591,24 @@ export default function MaterialLab({
               onChange={(event) => patchConfig({ cameraModel: event.target.value })}
               className="w-full rounded border border-[#28282A] bg-[#1C1C1E] px-3 py-2 text-xs text-white focus:border-[#555] focus:outline-none"
             />
+            <PresetChips
+              label="常用机型 · 点一下填入"
+              options={CAMERA_PRESETS}
+              value={config.cameraModel ?? ''}
+              onPick={(next) => patchConfig({ cameraModel: next })}
+            />
             <input
               type="text"
               value={config.filmBrand ?? ''}
               placeholder="胶卷型号（如 KODAK PORTRA 400）"
               onChange={(event) => patchConfig({ filmBrand: event.target.value })}
               className="w-full rounded border border-[#28282A] bg-[#1C1C1E] px-3 py-2 text-xs text-white focus:border-[#555] focus:outline-none"
+            />
+            <PresetChips
+              label="常用胶卷 · 点一下填入"
+              options={FILM_PRESETS}
+              value={config.filmBrand ?? ''}
+              onPick={(next) => patchConfig({ filmBrand: next })}
             />
           </div>
         </Section>

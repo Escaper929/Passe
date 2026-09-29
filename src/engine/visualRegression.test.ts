@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { CAMERA_PRESETS, FILM_PRESETS, longestOf } from '@/components/stampSubjects';
 import { resolveConfig } from '@/engine/GalleryFramingEngine';
-import { scaledPx } from '@/engine/scaleFactor';
+import { measureStampLabelInk, stampGeometry, stampLabel } from '@/engine/materials';
 import type { FrameConfig } from '@/engine/types';
 import {
   baselinePath,
@@ -123,22 +124,22 @@ describe('视觉回归 · 钢印文字带不进指纹', () => {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error(`${scene.id}：无 2D 上下文`);
 
-      // 与 materials.ts 的 drawDeboss 同源：逐字度量 + 末尾不计字距
-      const label = [resolved.cameraModel, resolved.filmBrand]
-        .filter(Boolean)
-        .join('   /   ')
-        .toUpperCase();
-      const fontSize = scaledPx(9.5, layout.canvasW, layout.canvasH, 8);
-      const tracking = 2.4 * layout.scale;
-
-      ctx.font = `600 ${fontSize}px Inter, -apple-system, BlinkMacSystemFont, sans-serif`;
-      const chars = Array.from(label);
-      const inkWidth =
-        chars.reduce((sum, ch) => sum + ctx.measureText(ch).width, 0) +
-        tracking * (chars.length - 1);
+      // 字号、字距、字体串全部取自引擎那一份（`stampGeometry` / 量宽助手）。
+      // 这里踩过一次：v1.4.4 把字号 9.5 → 14、字距 2.4 → 3.5 之后，
+      // 本条用例还按 9.5 / 2.4 在量 —— 于是这把尺子比真实值乐观了三分之一，
+      // 而它照样全绿。**量尺与算式分家，是"断言还在、守卫已经失效"的典型。**
+      const geometry = stampGeometry(layout);
+      const label = stampLabel(resolved.cameraModel, resolved.filmBrand);
+      const inkWidth = measureStampLabelInk(ctx, label, geometry);
 
       const centerX = layout.x + layout.w / 2;
       const band = stampTextBand(layout);
+      const used = (inkWidth / (band.x1 - band.x0)) * 100;
+
+      console.log(
+        `[排除带] ${scene.id}：${label.length} 字／墨迹 ${inkWidth.toFixed(0)}px ／` +
+          `带宽 ${(band.x1 - band.x0).toFixed(0)}px → 占 ${used.toFixed(0)}%`,
+      );
 
       expect(centerX - inkWidth / 2, `${scene.id}：文字左缘越出排除带`).toBeGreaterThanOrEqual(
         band.x0,
@@ -147,6 +148,53 @@ describe('视觉回归 · 钢印文字带不进指纹', () => {
         band.x1,
       );
     }
+  });
+
+  /**
+   * 界面给机型与胶卷各配了一份候选列表（`stampSubjects.ts`）。
+   *
+   * 用户在两边各点一下，就会得到**这个列表能产出的最长那一行字**。
+   * 那条最长的组合必须和场景一样落在排除带内 —— 否则"提供了这个选项"
+   * 就等于"提供了一个会把字样顶出卡纸的选项"，而这只有在用户真去点的时候才发作。
+   */
+  it('候选列表里最长的机型 + 最长的胶卷，放进每个场景的版式都不越界', () => {
+    const cameraModel = longestOf(CAMERA_PRESETS);
+    const filmBrand = longestOf(FILM_PRESETS);
+    const label = stampLabel(cameraModel, filmBrand);
+
+    const checked: string[] = [];
+
+    for (const scene of VISUAL_SCENES) {
+      const resolved = resolveConfig(scene.config);
+      if (!resolved.enableStamp || !resolved.layers.stamp) continue;
+
+      const { canvas, layout } = renderScene({
+        ...scene,
+        config: { ...scene.config, cameraModel, filmBrand },
+      });
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error(`${scene.id}：无 2D 上下文`);
+
+      const geometry = stampGeometry(layout);
+      const inkWidth = measureStampLabelInk(ctx, label, geometry);
+      const centerX = layout.x + layout.w / 2;
+      const band = stampTextBand(layout);
+
+      checked.push(`${scene.id} ${((inkWidth / (band.x1 - band.x0)) * 100).toFixed(0)}%`);
+
+      expect(
+        centerX - inkWidth / 2,
+        `${scene.id}：最长预设的左缘越出排除带`,
+      ).toBeGreaterThanOrEqual(band.x0);
+      expect(centerX + inkWidth / 2, `${scene.id}：最长预设的右缘越出排除带`).toBeLessThanOrEqual(
+        band.x1,
+      );
+    }
+
+    console.log(
+      `[最长预设] ${cameraModel}   /   ${filmBrand}（${label.length} 字）占排除带：` +
+        checked.join('｜'),
+    );
   });
 });
 
