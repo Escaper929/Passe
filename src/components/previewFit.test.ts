@@ -1,3 +1,5 @@
+// 纯逻辑/原生画布，不碰 DOM —— 刻意跑 node 环境省掉 jsdom 的建立开销（见 vite.config.ts）
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
 import { fitPreview } from './previewFit';
