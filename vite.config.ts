@@ -56,13 +56,18 @@ export default defineConfig({
      * 测试确实要用 `document`（`render.test.ts` 直接 spy `createElement`、
      * `presets.test.ts` 读写 localStorage），按后缀切会整片报错。
      *
-     * 判据是**这个文件里有没有直接出现 `document` / `window`**，
-     * 不是"它测什么"。反例有两个，都是我先判错、跑挂了才改回来的：
-     * `visualRegression.test.ts` 跑真实像素渲染、`scaleInvariance.test.ts`
-     * 跑尺度不变性，但两者都要 DOM —— 前者在 `beforeAll` 里调
-     * `installNativeCanvas()`，那函数 spy 的正是 `Document.prototype.createElement`。
+     * 判据是**这个文件有没有摸 DOM 全局**，不是"它测什么"。这里有两种写法，
+     * 两种都算摸：`document.*` / `window.*`，以及 `HTMLAnchorElement` 这种
+     * **全局构造器**（`saveBlob.test.ts` 全文没有一处 `document.`，却 spy 了
+     * `HTMLAnchorElement.prototype.click`、断言 `document.querySelectorAll`）。
+     * 只 grep `document` 会漏掉后者 —— 我就这么判错过一次，跑挂了才回头看。
+     *
+     * 更容易判错的是"看它测什么"：我一度把 `visualRegression.test.ts`
+     * （真实像素渲染）和 `scaleInvariance.test.ts`（尺度不变性）也标成 node，
+     * 两者其实都要 DOM —— 前者在 `beforeAll` 里调 `installNativeCanvas()`，
+     * 那函数 spy 的正是 `Document.prototype.createElement`。
      * 反过来 `queue.test.ts` 只把 `HTMLCanvasElement` 当**类型**用在断言签名里，
-     * 运行期完全不碰 DOM，这种才适合走 node。
+     * 运行期完全不碰，这种才适合走 node。
      */
     environment: 'jsdom',
     globals: true,
