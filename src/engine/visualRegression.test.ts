@@ -229,9 +229,7 @@ describe('视觉回归 · 底边带不进指纹', () => {
     expect(wide.off, `${wide.id} 偏离中线 ${wide.off.toFixed(1)}px`).toBeLessThan(12);
 
     console.log(
-      `[钢印居中] ${offsets
-        .map((o) => `${o.id} 带${o.band}px 偏${o.off.toFixed(1)}`)
-        .join('｜')}`,
+      `[钢印居中] ${offsets.map((o) => `${o.id} 带${o.band}px 偏${o.off.toFixed(1)}`).join('｜')}`,
     );
   });
 
@@ -251,11 +249,25 @@ describe('视觉回归 · 底边带不进指纹', () => {
    * （无 Arial/Helvetica，落到 DejaVu 系）是 267px = 150%，直接判死。
    * 等于把"CI 装了哪几个字体"变成了验收条件。
    *
-   * 换成相片宽度之后，余量按字号的实测推：
-   * - 本机：最紧的 `small-source` 还剩 56px（墨迹 188 / 相片宽 300），其余八个场景 ≥ 147px；
-   * - CI：`small-source` 折算下来剩 **8px** —— 因为那一档的字号被钳位下限顶在 8px
-   *   （画布只有 356px 宽），小画布上钢印**本来就**相对偏大，而 21 号字又把它推近了一格。
-   *   这是余量最小的一条；真要越过去就是字压到相纸上，那确实该报错。
+   * 换成相片宽度之后，余量按字号的实测推（**数字是量出来的，别凭印象改**）：
+   * 13 个场景的墨迹 / 相片宽占比，本机 0.65 ~ 0.85；CI 的字体回退把它乘 **1.187**，
+   * 于是折算下来 `small-source` 余 23px（最紧的一条）、`9-16-native` 与
+   * `portrait-weighted` 余 82px，其余相片 1200 的场景 ≥ 202px。
+   *
+   * ⚠️ **这条断言是全仓库唯一会因宿主字体而失败的** —— 本地全绿不代表 CI 全绿。
+   * 真的踩过：加了 `aspect-portrait-4-5-native`（竖图 800×1200 配 4:5）之后
+   * 本地 14 个场景全绿，CI 上却红在
+   * `左缘压到卡纸上: expected 179.2 to be greater than or equal to 181` ——
+   * 墨迹占比 0.846 乘 1.187 正好 **1.004**，越界 0.4%。
+   *
+   * 而**换相片尺寸救不了**：字号按 `min(画布宽高)/1200` 缩放，画布与相片同比，
+   * 占比与尺寸无关（600×900 到 1900×2850 全试过，都是 1.004）——
+   * 那是 **4:5 这个比例对 44 字长行的固有性质**。所以那条场景换成了
+   * `9-16 配竖图`（占比 0.70，CI 下余 11.6%），守的仍是"竖档给竖图补足留白"
+   * 这条路径，且画布 1024×1820 与横图那条 1424×2532 完全不同，覆盖互补。
+   *
+   * → **给视觉回归加场景时，新场景必须过这一条。** 它是场景矩阵的入口门槛，
+   * 不在本地跑到它，就等于把 CI 的一次红当成"环境问题"放过去。
    */
   it('候选列表里最长的机型 + 最长的胶卷，在每个场景里都留在相片宽度内', () => {
     const cameraModel = longestOf(CAMERA_PRESETS);
@@ -365,7 +377,7 @@ describe('视觉回归 · 竖屏档的几何', () => {
     for (const [id, target] of [
       ['aspect-portrait-3-4', 3 / 4],
       ['aspect-portrait-9-16', 9 / 16],
-      ['aspect-portrait-4-5-native', 4 / 5],
+      ['aspect-portrait-9-16-native', 9 / 16],
     ] as const) {
       const scene = findScene(id);
       const { canvas, layout } = renderScene(scene);
@@ -378,8 +390,10 @@ describe('视觉回归 · 竖屏档的几何', () => {
 
       // 外框比例要**真的**落在目标值上（1 位小数的余量，抵掉 round 取整）
       const actual = layout.canvasW / layout.canvasH;
-      expect(Math.abs(actual - target), `${id}：外框比例 ${actual.toFixed(4)} 偏离 ${target.toFixed(4)}`)
-        .toBeLessThan(0.005);
+      expect(
+        Math.abs(actual - target),
+        `${id}：外框比例 ${actual.toFixed(4)} 偏离 ${target.toFixed(4)}`,
+      ).toBeLessThan(0.005);
     }
   });
 
@@ -393,7 +407,7 @@ describe('视觉回归 · 竖屏档的几何', () => {
    */
   it('横图套竖档时底边带会变宽，但不得离谱 —— 留白是有上限的', () => {
     const landscape = findScene('aspect-portrait-3-4');
-    const native = findScene('aspect-portrait-4-5-native');
+    const native = findScene('aspect-portrait-9-16-native');
     const LANDSCAPE_BAND = 0.45;
 
     const bandOf = (scene: (typeof VISUAL_SCENES)[number]) => {
@@ -426,9 +440,13 @@ describe('视觉回归 · 竖屏档的几何', () => {
       const scene = findScene(id);
       const good = fingerprintOf(scene);
       const bad = renderScene(scene, scene.photo, { bottomWeight: 1 });
-      const diff = compareFingerprint(good.fingerprint, computeFingerprint(id, bad.canvas, bad.layout), {
-        layout: bad.layout,
-      });
+      const diff = compareFingerprint(
+        good.fingerprint,
+        computeFingerprint(id, bad.canvas, bad.layout),
+        {
+          layout: bad.layout,
+        },
+      );
       console.log(`[竖屏档负向对照] ${id} 底边加权 1.25 → 1 → ${summarizeDiff(diff)}`);
 
       expect(isMatch(diff), `竖屏档基线没抓到回归：${id}`).toBe(false);
