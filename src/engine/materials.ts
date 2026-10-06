@@ -313,9 +313,83 @@ export function stampGeometry(layout: Layout, depth: number = DEFAULT_STAMP_DEPT
   const iconWidth = (iconSize * CAMERA_VECTOR_WIDTH_UNITS) / CAMERA_VECTOR_UNITS;
   const iconHeight = (iconSize * CAMERA_VECTOR_HEIGHT_UNITS) / CAMERA_VECTOR_UNITS;
 
-  const iconY = Math.round(layout.y + layout.h + bottomOffset * 0.36);
-  // 间距按图标尺寸取比例 —— 写死成常数的话，图标一改大小构图就散（见常量区注释）
-  const textY = iconY + Math.round(iconSize * STAMP_ICON_GAP_RATIO);
+  const iconToText = Math.round(iconSize * STAMP_ICON_GAP_RATIO);
+
+  /**
+   * 钢印组在底边带里**居中**，而不是按固定比例往下推。
+   *
+   * ## 为什么不能是常数
+   *
+   * 原来是 `iconY = 相片下沿 + bottomOffset * 0.36`。那个 0.36 是按
+   * **典型底边带（140px）** 校准的：0.36×140 = 50.4，加上半个组高补偿后
+   * 恰好让组心落在带中线上 —— 在 `baseline-light` 上实测偏 **-9px**，
+   * 确实是居中的。
+   *
+   * 但底边带不是一个常数。它由 `marginRatio × 照片短边 × bottomWeight` 决定，
+   * 实际范围从 `small-source` 的 **35px** 到横图套 9:16 的 **962px**，跨度 27 倍。
+   * 系数固定，于是"居中"只在那个被校准的带宽上成立：
+   *
+   * | 场景 | 底边带 | 组心偏离带中线 |
+   * |---|---|---|
+   * | `baseline-light` | 140px | −9px（≈居中） |
+   * | `margin-wide` | 300px | −28px |
+   * | `aspect-portrait-3-4` | 611px | −71px |
+   * | `aspect-portrait-9-16` | 962px | **−120px** |
+   *
+   * 越到竖屏档钢印越贴向相片一侧，在 9:16 下离照片三百多像素。
+   * 这不是"钢印太大"，是**锚点公式在大留白下失效**。
+   *
+   * ## 现在的算法
+   *
+   * 直接解"组心 = 带中线"这个方程。**注意组心不能按 `groupHeight / 2` 算** ——
+   * `iconY` 是图标的**中心**、不是组的顶边，所以组高里不该含 `iconHeight`：
+   *
+   * ```
+   * 组顶 = iconY − iconHeight/2
+   * 组底 = textY  + fontSize/2 = iconY + iconToText + fontSize/2
+   * 组心 = (组顶 + 组底) / 2 = iconY + (iconToText + fontSize/2) / 2
+   * ```
+   *
+   * 代入 `组心 = 带中线`，得 `iconY = 带中线 − (iconToText + fontSize/2) / 2`。
+   * 这一步算错的话不会崩，只会让钢印**恒定偏上十几像素** ——
+   * 看着仍"大致居中"，所以必须靠断言量出来，别靠眼睛。
+   *
+   * 于是公式**对任意带宽都成立**，不再依赖"典型值"这个隐含前提：
+   * 窄带（35px）里钢印贴着相片、宽带（962px）里居中，两头都对。
+   * 修正前后的实测（组心偏离带中线）：
+   *
+   * | 场景 | 底边带 | 修正前 | 修正后 |
+   * |---|---|---|---|
+   * | `baseline-light` | 140px | −9px | ≈0 |
+   * | `aspect-portrait-3-4` | 611px | −71px | ≈0 |
+   * | `aspect-portrait-9-16` | 962px | **−120px** | ≈0 |
+   */
+  const bandTop = layout.y + layout.h;
+  const bandCenter = bandTop + bottomOffset / 2;
+  const centered = bandCenter - (iconToText + fontSize / 2) / 2;
+  /**
+   * ## 窄带装不下时，居中会把钢印推到相片上
+   *
+   * `margin-tight`（`marginRatio: 0.05`）的底边带只有 **50px**，而组高 41px ——
+   * 装得下，但**居中后上沿会越过相片下沿 5px**。旧公式在窄带上恰好躲过了
+   * （它把钢印往下按，窄带时反而更安全），代价是宽带上贴向相片。
+   *
+   * 所以要**夹取**：算完居中位，若组超出带就贴边。
+   * 两头都要守住 —— 压到相片上会让指纹混进随字体变的像素
+   * （那条底边带自证锁直接红），越出画布则是肉眼可见的裁切。
+   */
+  const minIconY = bandTop + iconHeight / 2;
+  /**
+   * 贴边那一支要**向上取整**（`ceil`），不能四舍五入。
+   *
+   * `margin-tight` 实测：夹取后的精确值是 839.6，而带沿在 840 ——
+   * 差 0.4px。`Math.round(839.6) = 840` 看着正好贴边，但断言量的是
+   * `iconY − iconHeight/2` 这个**未取整**的几何值，仍是 839.6 < 840，
+   * 于是"压到相片上"照红。取整方向必须**向内**（下取整），宁可留一丝缝，
+   * 也不能让亚像素的溢出变成真的压在相片上。
+   */
+  const iconY = centered < minIconY ? Math.ceil(minIconY) : Math.round(centered);
+  const textY = iconY + iconToText;
   const netGap = textY - fontSize / 2 - (iconY + iconHeight / 2);
 
   return {

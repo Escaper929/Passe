@@ -174,6 +174,68 @@ describe('视觉回归 · 底边带不进指纹', () => {
   });
 
   /**
+   * 钢印组在底边带里**居中**，且居中度**不随带宽变差**。
+   *
+   * ## 这条守的是一次真实修复
+   *
+   * 原来的公式是 `iconY = 相片下沿 + bottomOffset * 0.36` ——
+   * 那个 0.36 是按**典型底边带（140px）** 校准的：在 `baseline-light` 上
+   * 确实居中（偏 9px）。但底边带的实际范围是 **35px ~ 962px**（跨 27 倍），
+   * 系数固定就成了"只在被校准的那个值上成立"：
+   *
+   * | 场景 | 底边带 | 旧公式偏离 |
+   * |---|---|---|
+   * | `baseline-light` | 140px | −9px |
+   * | `margin-wide` | 300px | −28px |
+   * | `aspect-portrait-3-4` | 611px | −71px |
+   * | `aspect-portrait-9-16` | 962px | **−120px** |
+   *
+   * 后果是竖屏档里钢印一路贴向相片，9:16 下离照片三百多像素 ——
+   * 那不是"钢印太大"，是**锚点公式在大留白下失效**。
+   *
+   * ## 为什么要两条断言
+   *
+   * 居中偏差在窄带上天生就大（带宽只有组高的 1.2 倍，取整误差被放大），
+   * 所以不能一刀切成"偏离 < 1px"。真正要防的是**带宽 dependence**：
+   * 只要"偏离量不随带宽增长"，就说明公式对任意带宽都成立；
+   * 一旦有人把它改回常数系数，宽带那两条立刻超限。
+   */
+  it('钢印在底边带里居中，且偏离量不随带宽增长', () => {
+    /** 组心偏离带中线的绝对值，按带宽从小到大排。 */
+    const offsets: { id: string; band: number; off: number }[] = [];
+
+    for (const scene of VISUAL_SCENES) {
+      const { layout } = renderScene(scene);
+      const g = stampGeometry(layout);
+      const bandTop = layout.y + layout.h;
+      const bandCenter = bandTop + layout.bottomOffset / 2;
+      const groupTop = g.iconY - g.iconHeight / 2;
+      const groupBottom = g.textY + g.fontSize / 2;
+      offsets.push({
+        id: scene.id,
+        band: layout.bottomOffset,
+        off: Math.abs((groupTop + groupBottom) / 2 - bandCenter),
+      });
+    }
+
+    offsets.sort((a, b) => a.band - b.band);
+    const narrow = offsets[0];
+    const wide = offsets[offsets.length - 1];
+    // 带最宽的那条也不能比最窄的差太多 —— 否则就是"按某个值校准的常数"
+    expect(wide.off, `${wide.id}（带 ${wide.band}px）偏离 ${wide.off.toFixed(1)}`).toBeLessThan(
+      narrow.off + 6,
+    );
+    // 绝对上限：最宽的带里偏离也要在半行字高内
+    expect(wide.off, `${wide.id} 偏离中线 ${wide.off.toFixed(1)}px`).toBeLessThan(12);
+
+    console.log(
+      `[钢印居中] ${offsets
+        .map((o) => `${o.id} 带${o.band}px 偏${o.off.toFixed(1)}`)
+        .join('｜')}`,
+    );
+  });
+
+  /**
    * 界面给机型与胶卷各配了一份候选列表（`stampSubjects.ts`）。
    *
    * 用户在两边各点一下，就会得到**这个列表能产出的最长那一行字**。
