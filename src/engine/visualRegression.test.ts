@@ -288,6 +288,127 @@ describe('视觉回归 · 负向对照（改了必须报错）', () => {
   });
 });
 
+/* ─────────────── 竖屏档：外框比例反过来决定画布尺寸 ─────────────── */
+
+/**
+ * `targetAspect` 与其它入参的方向是**反的**：照片是给定的，画布被撑到那个比例。
+ * 横图套竖档时上下要补出几百像素留白（9:16 那条占到画布高 38%），
+ * 而这段几何此前没有任何基线 —— v1.3 补竖屏档时只加了比例选项，没加守卫。
+ *
+ * 这一组把"竖屏档算对了"钉成**行为**，而不是靠三份基线 JSON 的存在。
+ * 基线能守住"没动"，但下面两条能在**几何算错**时给出可读的原因。
+ */
+describe('视觉回归 · 竖屏档的几何', () => {
+  it('照片不被裁，外框比例精确命中 —— 竖档改的是画布不是照片', () => {
+    for (const [id, target] of [
+      ['aspect-portrait-3-4', 3 / 4],
+      ['aspect-portrait-9-16', 9 / 16],
+      ['aspect-portrait-4-5-native', 4 / 5],
+    ] as const) {
+      const scene = findScene(id);
+      const { canvas, layout } = renderScene(scene);
+
+      // 照片守恒：画布撑到目标比例，但照片本身一个像素都不能少
+      expect(layout.w, `${id}：照片宽度被裁了`).toBe(scene.photo.width);
+      expect(layout.h, `${id}：照片高度被裁了`).toBe(scene.photo.height);
+      expect(canvas.width, `${id}：成品画布比照片还小`).toBeGreaterThanOrEqual(layout.w);
+      expect(canvas.height, `${id}：成品画布比照片还小`).toBeGreaterThanOrEqual(layout.h);
+
+      // 外框比例要**真的**落在目标值上（1 位小数的余量，抵掉 round 取整）
+      const actual = layout.canvasW / layout.canvasH;
+      expect(Math.abs(actual - target), `${id}：外框比例 ${actual.toFixed(4)} 偏离 ${target.toFixed(4)}`)
+        .toBeLessThan(0.005);
+    }
+  });
+
+  /**
+   * 横图套竖档，底边带必然变宽 —— 那是几何的必然结果，不是缺陷。
+   *
+   * 但它有个**上界**：`9:16` 那档底边带占到画布高 38%，钢印离照片四百多像素。
+   * 这个观感问题本项目已经拍板"先接受"，所以这里守的是**别变得更离谱**：
+   * 一旦哪次改几何让底边带突破 45%（钢印几乎悬在相片与画布之间的空当里），
+   * 就该有人回来重新看一眼，而不是让它悄悄长下去。
+   */
+  it('横图套竖档时底边带会变宽，但不得离谱 —— 留白是有上限的', () => {
+    const landscape = findScene('aspect-portrait-3-4');
+    const native = findScene('aspect-portrait-4-5-native');
+    const LANDSCAPE_BAND = 0.45;
+
+    const bandOf = (scene: (typeof VISUAL_SCENES)[number]) => {
+      const { layout } = renderScene(scene);
+      return (layout.canvasH - (layout.y + layout.h)) / layout.canvasH;
+    };
+
+    const wide = bandOf(landscape);
+    const tight = bandOf(native);
+
+    // 对照组：竖图配接近的竖档，底边带回到 10% 上下
+    expect(tight).toBeLessThan(0.2);
+    // 实验组：横图套竖档确实更宽，但守住上界
+    expect(wide).toBeGreaterThan(tight);
+    expect(wide, `底边带占画布高 ${(wide * 100).toFixed(1)}%，已离谱`).toBeLessThan(LANDSCAPE_BAND);
+  });
+
+  /**
+   * 竖屏档的基线**必须真抓得住回归** —— 否则那三份 JSON 只是摆设。
+   *
+   * 容差可以被一路放宽到什么都不报，所以"加了基线"这件事本身需要自检：
+   * 拿一个**必须失败**的改动喂给竖屏档的基线，看它报不报。
+   *
+   * 挑的改动是 `bottomWeight` 1.25 → 1：它只动上下分配、不动照片，
+   * 所以照片守恒那类几何错误它抓不到（那正是上面那条在管的），
+   * 但上下留白的比例一变，网格与探针就会整体移位 —— 正好落在这份基线的守地里。
+   */
+  it('竖屏档基线抓得住几何回归 —— 改底边加权必须报出来', () => {
+    for (const id of ['aspect-portrait-3-4', 'aspect-portrait-9-16']) {
+      const scene = findScene(id);
+      const good = fingerprintOf(scene);
+      const bad = renderScene(scene, scene.photo, { bottomWeight: 1 });
+      const diff = compareFingerprint(good.fingerprint, computeFingerprint(id, bad.canvas, bad.layout), {
+        layout: bad.layout,
+      });
+      console.log(`[竖屏档负向对照] ${id} 底边加权 1.25 → 1 → ${summarizeDiff(diff)}`);
+
+      expect(isMatch(diff), `竖屏档基线没抓到回归：${id}`).toBe(false);
+      expect(diff.reasons.length).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * 参与比对的格子不能被底边带吃光。
+   *
+   * 底边带是"相片下沿到底边、横向整幅"，比例越悬殊它占画布的比例越高：
+   * `aspect-portrait-9-16`（横图套 9:16）实测**排除 112/256 格 = 44%**，
+   * 只剩 144 格在守这条档。`aspect-portrait-4-5-native` 只排除 32 格（12.5%）。
+   *
+   * 44% 还没到失效，但它是**会悄悄变差的量**：哪天有人为了"少排除一点"
+   * 把底边带改成按 25%~75% 取（那正是本项目踩过的旧实现），或者把网格
+   * 从 16×16 降下来，守卫的密度就跟着掉，而所有比对依然"全绿"——
+   * **没有东西会变红，只是守得没那么紧了。**
+   *
+   * 所以给它一条下限：任何场景至少要有一半格子真正参与比对。
+   */
+  it('每个场景参与比对的格子不得少于一半 —— 排除区变大要有人看见', () => {
+    const MIN_RATIO = 0.5;
+    const rows: string[] = [];
+
+    for (const scene of VISUAL_SCENES) {
+      const { fingerprint } = fingerprintOf(scene);
+      const total = fingerprint.grid.cells.length;
+      const excluded = fingerprint.grid.cells.filter((cell) => cell === null).length;
+      const ratio = (total - excluded) / total;
+      rows.push(`${scene.id} ${(ratio * 100).toFixed(0)}%（排除 ${excluded}/${total}）`);
+
+      expect(
+        ratio,
+        `${scene.id}：只有 ${(ratio * 100).toFixed(0)}% 的格子参与比对（排除 ${excluded}/${total}），守卫过密`,
+      ).toBeGreaterThanOrEqual(MIN_RATIO);
+    }
+
+    console.log(`[底边带密度] ${rows.join('｜')}`);
+  });
+});
+
 /* ─────────────────────────── 基线重建 ─────────────────────────── */
 
 describe.runIf(UPDATE !== null)('视觉回归 · 重建基线', () => {

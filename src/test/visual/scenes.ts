@@ -8,7 +8,7 @@ import { createNativeCanvas } from './nativeCanvas';
  * 视觉回归的场景矩阵。
  *
  * 分组原则：**每个材质层的"看得见"与"边界"都要有场景**，
- * 而不是穷举参数组合。十个场景覆盖：
+ * 而不是穷举参数组合。场景矩阵覆盖：
  *
  * - 三层材质全都正常表达的基准（浅色卡纸）
  * - 材质通道整体翻转的极端（炭黑卡纸：纸纹换乘算+滤色、钢印收阴影强反光）
@@ -17,6 +17,22 @@ import { createNativeCanvas } from './nativeCanvas';
  * - 尺度两端：scaleFactor < 1 的小图下限、超大源图
  * - 长机型名（最宽的一行钢印字）
  * - 固定外框比例下的裁切路径
+ *
+ * ## 竖屏档为什么单独占三个场景
+ *
+ * `targetAspect` 是这个引擎里**唯一会反过来决定画布尺寸**的入参：照片给定，
+ * 画布被撑到那个比例，所以横图套竖档时上下要补出几百像素留白。
+ * 而 v1.3 才补上 3:4 / 4:5 / 9:16，此前这里只有 1:1 一个固定比例 ——
+ * 竖屏档走的是同一段代码却没有任何基线，改坏了没人拦得住。
+ *
+ * 三个场景各钉一个方向，不是凑数：
+ * - `aspect-portrait-3-4`：最常被用到的竖档，基准；
+ * - `aspect-portrait-9-16`：最窄的档，上下留白最极端（底边带占到画布高 38%），
+ *   那是这条分支上最容易崩的地方；
+ * - `aspect-portrait-4-5-native`：**给竖图**配 4:5，比例本就接近，
+ *   底边带回到 9.6%。留着是为了跟前两条形成对照 ——
+ *   "底边带变宽"是横图套竖档的固有结果，不是回归；
+ *   有了竖图这条，就分不清"留白被算错"和"外框比例本来就会这样"。
  *
  * 场景本身**不做任何断言**，它只是"输入"；期望值全部在 baseline JSON 里。
  */
@@ -110,6 +126,24 @@ export const VISUAL_SCENES: readonly VisualScene[] = [
     note: '固定外框 1:1：走的是 targetAspect 那条裁切分支',
     photo: { width: 1200, height: 800 },
     config: { matColor: '#F8F7F3', targetAspect: 1 },
+  },
+  {
+    id: 'aspect-portrait-3-4',
+    note: '固定外框 3:4（横图套竖档）：画布被撑高、左右只剩 112px，照片不裁',
+    photo: { width: 1200, height: 800 },
+    config: { matColor: '#F8F7F3', targetAspect: 3 / 4 },
+  },
+  {
+    id: 'aspect-portrait-9-16',
+    note: '固定外框 9:16（横图套最窄的竖档）：上下各撑到 770/962，底边带占画布高 38%',
+    photo: { width: 1200, height: 800 },
+    config: { matColor: '#F8F7F3', targetAspect: 9 / 16 },
+  },
+  {
+    id: 'aspect-portrait-4-5-native',
+    note: '固定外框 4:5 配竖图：比例本就接近，底边带回到 9.6%——与横图套竖档对照',
+    photo: { width: 800, height: 1200 },
+    config: { matColor: '#F8F7F3', targetAspect: 4 / 5 },
   },
 ];
 
